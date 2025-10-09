@@ -31,6 +31,6 @@ jobs:
   NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
   NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
 
-          TZ: 'America/Chicago'
+          TZ:  'America/Chicago'
         run: |
           python garmin_to_notion.py
