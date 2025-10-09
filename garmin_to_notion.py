@@ -51,7 +51,10 @@ if activities:
 
 # Steps, Sleep, Personal Records (daily stats)
 from datetime import date
-daily_summary = garmin_client.get_stats(date.today())
+
+today = date.today()
+daily_summary = garmin_client.get_stats(date.today().strftime("%Y-%m-%d"))
+
   # Returns dict of daily stats
 health_row = {
     "Date": {"date": {"start": today_str}},
