@@ -2,14 +2,19 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-  - cron: '0,30 10-15 * * *'  # Every 30 min between 5:00–10:30 AM Central (adjust UTC)
+    # Every 30 minutes between 5:30 AM – 10:30 AM Central Time
+    - cron: '30,0 10-15 * * *'  # UTC times corresponding to 5:30–10:30 AM Central
   workflow_dispatch:
+
+env:
+  TZ: 'America/Chicago'  # Global timezone for all steps
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
       - name: Set up Python
         uses: actions/setup-python@v4
