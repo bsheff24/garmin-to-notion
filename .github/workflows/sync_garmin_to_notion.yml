@@ -2,20 +2,14 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    # Daily at 1:00 AM Chicago time
-    - cron: '0 1 * * *'
+    - cron: '0 1 * * *' # Daily at 1:00 UTC
   workflow_dispatch:
-
-env:
-  TZ: 'America/Chicago'
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v2
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -40,10 +34,9 @@ jobs:
           GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
-          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
+          NOTION_HEALTH_DB_ID: ${{ secrets.NOTION_HEALTH_DB_ID }}
+          NOTION_ACTIVITIES_DB_ID: ${{ secrets.NOTION_ACTIVITIES_DB_ID }}
           NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
           NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
-          TZ: 'America/Chicago'
-        run: |
-          python garmin_to_notion.py
+          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
+        run: python garmin_to_notion.py
