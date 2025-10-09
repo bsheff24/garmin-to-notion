@@ -80,6 +80,8 @@ else:
 
 # Health Metrics DB
 if health_row and not already_logged(NOTION_HEALTH_DB_ID, today_str):
-    notion.pages.create(parent={"database_id"_
-
+    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_row)
+    print(f"✅ Health metrics added for {today_str}")
+else:
+    print(f"⚠️ Health metrics already logged or missing")
 
