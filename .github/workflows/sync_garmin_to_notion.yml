@@ -37,7 +37,7 @@ jobs:
 
       - name: Run Garmin to Notion script
         env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
