@@ -2,47 +2,34 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    # This cron job will run every 15 minutes from 6 AM to 11 PM Eastern Time
-    # - cron: '*/10 10-23 * * *'  # Every 15 minutes from 10:00 to 23:45 UTC 
-    # - cron: '*/10 0-3 * * *'    # Every 15 minutes from 00:00 to 03:45 UTC
-    - cron: '0 1 * * *' # Daily
-  workflow_dispatch:
-env:
-  TZ: 'America/Montreal'
+    - cron: '0 11 * * *'  # Runs every day at 6 AM CT (11:00 UTC)
+  workflow_dispatch:      # Allows manual runs from the Actions tab
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run Garmin → Notion sync
         env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_USERNAME: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
-          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
-          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
+          NOTION_HEALTH_DB_ID: ${{ secrets.NOTION_HEALTH_DB_ID }}
+          NOTION_ACTIVITIES_DB_ID: ${{ secrets.NOTION_ACTIVITIES_DB_ID }}
           NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
-          TZ: 'America/Chicago'
-        run: |
-          python garmin_to_notion.py
+          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
+          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
+        run: python garmin_to_notion.py
