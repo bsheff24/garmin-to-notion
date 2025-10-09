@@ -23,13 +23,14 @@ jobs:
 
       - name: Run script
         env:
-          GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_HEALTH_DB_ID: ${{ secrets.NOTION_HEALTH_DB_ID }}
-          NOTION_ACTIVITIES_DB_ID: ${{ secrets.NOTION_ACTIVITIES_DB_ID }}
-          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
-          NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
-          TZ: 'America/Montreal'
+  GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
+  GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+  NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+  NOTION_HEALTH_DB_ID: ${{ secrets.NOTION_HEALTH_DB_ID }}
+  NOTION_ACTIVITIES_DB_ID: ${{ secrets.NOTION_ACTIVITIES_DB_ID }}
+  NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
+  NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
+
+          TZ: 'America/Chicago'
         run: |
           python garmin_to_notion.py
