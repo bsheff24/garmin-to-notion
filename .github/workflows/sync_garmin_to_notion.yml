@@ -2,7 +2,7 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    - cron: '0 1 * * *' # Daily at 1:00 UTC
+- cron: '0,30 10-15 * * *'  # Every 30 min between 5:00–10:30 AM Central (adjust UTC)
   workflow_dispatch:
 
 jobs:
