@@ -6,7 +6,7 @@ from garminconnect import Garmin
 # ----------------------
 # Load environment variables
 # ----------------------
-GARMIN_USERNAME = os.environ.get("GARMIN_EMAIL")
+GARMIN_USERNAME = os.environ.get("GARMIN_USERNAME")
 GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.environ.get("NOTION_HEALTH_DB_ID")
