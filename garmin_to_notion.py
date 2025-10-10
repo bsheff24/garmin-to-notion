@@ -130,8 +130,16 @@ if isinstance(pr_list, list):
         date_pr = pr.get("startTimeLocal", today_str)[:10]
         pr_row = {
             "Date": {"date": {"start": date_pr}},
-            "PR Type": {"title": [{"text": {"content": pr_type}}]},
-            "Value": {"number": value},
+            "PR Type": {
+                "rich_text": [
+                    {"text": {"content": pr_type}}
+                ]
+            },
+            "Value": {
+                "rich_text": [
+                    {"text": {"content": str(value)}}
+                ]
+            },
         }
         push_to_notion(NOTION_PR_DB_ID, pr_row, "Personal Record")
 
