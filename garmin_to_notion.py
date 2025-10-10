@@ -119,10 +119,19 @@ sleep_row = {
 # Health Data
 # -----------------------------
 
+    # Handle list or dict body battery data safely
+body_battery_value = 0
+if body_battery:
+    if isinstance(body_battery, list):
+        latest = body_battery[-1]  # get last entry
+        body_battery_value = latest.get("bodyBatteryValue", 0) if isinstance(latest, dict) else 0
+    elif isinstance(body_battery, dict):
+        body_battery_value = body_battery.get("bodyBatteryValue", 0)
+
 health_row = {
     "Name": {"title": [{"text": {"content": f"Health — {today_str}"}}]},
     "Date": build_notion_date(today),
-    "Body Battery": {"number": body_battery.get("bodyBatteryValue", 0) if body_battery else 0},
+    "Body Battery": {"number": body_battery_value},
     "Training Readiness": {"number": training_readiness.get("trainingReadinessScore", 0) if training_readiness else 0},
     "Training Status": {"rich_text": [{"text": {"content": training_status.get("trainingStatus", "Unknown")}}] if training_status else []},
 }
