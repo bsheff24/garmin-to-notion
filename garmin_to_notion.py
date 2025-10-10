@@ -23,7 +23,6 @@ garmin.login()
 # HELPERS
 # ---------------------------
 def notion_date(dt):
-    """Return Notion date object or None."""
     if not dt:
         return {"date": None}
     if isinstance(dt, str):
@@ -31,32 +30,24 @@ def notion_date(dt):
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
-    """Return Notion number property or None if empty."""
     return {"number": float(value)} if value is not None else {"number": None}
 
 def notion_text(value):
-    """Return Notion rich_text property."""
     if not value:
         return {"rich_text": []}
     return {"rich_text": [{"text": {"content": str(value)}}]}
 
+def notion_select(value):
+    if not value:
+        return {"select": None}
+    return {"select": {"name": str(value)}}
+
 def already_logged(db_id, date_str):
-    """Check if a page for the date already exists."""
     response = notion.databases.query(
-        **{
-            "database_id": db_id,
-            "filter": {"property": "Date", "date": {"equals": date_str}},
-        }
+        database_id=db_id,
+        filter={"property": "Date", "date": {"equals": date_str}},
     )
     return len(response.get("results", [])) > 0
-
-def safe_extract(data, key, default=None):
-    """Extract key safely from dict or list of dicts."""
-    if isinstance(data, dict):
-        return data.get(key, default)
-    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-        return data[0].get(key, default)
-    return default
 
 # ---------------------------
 # DATE SETUP
@@ -72,78 +63,98 @@ print(f"📅 Collecting Garmin data for {yesterday_str}")
 # ---------------------------
 try:
     activities = garmin.get_activities(0, 10)
-    print("DEBUG: Raw activities:", activities)
 except Exception as e:
     print("⚠️ Failed to fetch activities:", e)
     activities = []
 
 try:
-    steps = garmin.get_daily_steps(yesterday_str, yesterday_str)
-    print("DEBUG: Raw steps data:", steps)
+    steps_data = garmin.get_daily_steps(yesterday_str, yesterday_str)
 except Exception as e:
     print("⚠️ Steps unavailable:", e)
-    steps = []
+    steps_data = []
 
 try:
-    sleep_data = garmin.get_sleep_data(yesterday_str)
-    print("DEBUG: Raw sleep data:", sleep_data)
+    sleep_raw = garmin.get_sleep_data(yesterday_str)
 except Exception as e:
     print("⚠️ Sleep data unavailable:", e)
-    sleep_data = {}
+    sleep_raw = {}
 
 try:
-    body_battery = garmin.get_body_battery(yesterday_str, yesterday_str)
-    print("DEBUG: Raw body battery data:", body_battery)
+    body_battery_raw = garmin.get_body_battery(yesterday_str, yesterday_str)
 except Exception as e:
     print("⚠️ Body Battery unavailable:", e)
-    body_battery = []
+    body_battery_raw = []
 
 try:
-    body_comp = garmin.get_body_composition(yesterday_str)
-    print("DEBUG: Raw body composition data:", body_comp)
+    body_comp_raw = garmin.get_body_composition(yesterday_str)
 except Exception as e:
     print("⚠️ Body composition unavailable:", e)
-    body_comp = []
+    body_comp_raw = []
 
 try:
-    readiness = garmin.get_training_readiness(yesterday_str)
-    print("DEBUG: Raw training readiness:", readiness)
+    readiness_raw = garmin.get_training_readiness(yesterday_str)
 except Exception as e:
     print("⚠️ Training readiness unavailable:", e)
-    readiness = {}
+    readiness_raw = []
 
 try:
-    status = garmin.get_training_status(yesterday_str)
-    print("DEBUG: Raw training status:", status)
+    status_raw = garmin.get_training_status(yesterday_str)
 except Exception as e:
     print("⚠️ Training status unavailable:", e)
-    status = {}
+    status_raw = []
 
 try:
-    stats = garmin.get_stats_and_body(yesterday_str)
-    print("DEBUG: Raw stats:", stats)
+    stats_raw = garmin.get_stats_and_body(yesterday_str)
 except Exception as e:
     print("⚠️ Stats unavailable:", e)
-    stats = {}
+    stats_raw = {}
 
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
-sleep_score = safe_extract(sleep_data, "sleepScore")
-bed_time = safe_extract(sleep_data, "sleepStartTimestampGMT")
-wake_time = safe_extract(sleep_data, "sleepEndTimestampGMT")
+def safe_extract(data, key, default=None):
+    if isinstance(data, dict):
+        return data.get(key, default)
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        return data[0].get(key, default)
+    return default
 
-body_battery_value = safe_extract(body_battery, "bodyBatteryValue")
-body_weight = safe_extract(body_comp, "weight")
-training_readiness = safe_extract(readiness, "trainingReadinessScore")
-training_status = safe_extract(status, "trainingStatus")
-resting_hr = safe_extract(stats, "restingHeartRate")
-stress = safe_extract(stats, "stressLevelAvg")
-calories = safe_extract(stats, "totalKilocalories")
+sleep_score = safe_extract(sleep_raw, "sleepScore")
+bed_time = safe_extract(sleep_raw, "sleepStartTimestampGMT")
+wake_time = safe_extract(sleep_raw, "sleepEndTimestampGMT")
+
+body_battery_value = safe_extract(body_battery_raw, "bodyBatteryValue")
+body_weight = None
+if "dateWeightList" in body_comp_raw and len(body_comp_raw["dateWeightList"]) > 0:
+    body_weight = body_comp_raw["dateWeightList"][0].get("weight")
+
+training_readiness = safe_extract(readiness_raw, "score")
+training_status = None
+status_parsed = safe_extract(status_raw, "latestTrainingStatusData")
+if isinstance(status_parsed, dict):
+    # Get the first device entry
+    first_device = list(status_parsed.values())[0]
+    training_status = first_device.get("trainingStatus")
+
+resting_hr = safe_extract(stats_raw, "restingHeartRate")
+stress = safe_extract(stats_raw, "stressLevelAvg")
+calories = safe_extract(stats_raw, "totalKilocalories")
 
 steps_total = 0
-if isinstance(steps, list) and len(steps) > 0:
-    steps_total = sum(item.get("stepsCount", 0) for item in steps)
+if isinstance(steps_data, list) and len(steps_data) > 0:
+    steps_total = sum(item.get("stepsCount", 0) for item in steps_data)
+
+# ---------------------------
+# DEBUG PRINT
+# ---------------------------
+print("DEBUG: Raw data preview ---------------------")
+print("Body composition:", body_comp_raw if body_comp_raw else "No body data")
+print("Sleep data:", sleep_raw if sleep_raw else "No sleep data")
+print("Body battery:", body_battery_raw if body_battery_raw else "No body battery")
+print("Training readiness:", training_readiness if training_readiness else "No readiness data")
+print("Training status:", training_status if training_status else "No training status")
+print("Steps data:", steps_data if steps_data else "No steps data")
+print("-----------------------------------------------------")
 
 # ---------------------------
 # PUSH TO NOTION - HEALTH METRICS
@@ -159,7 +170,7 @@ if not already_logged(NOTION_HEALTH_DB_ID, yesterday_str):
             "Bedtime": notion_date(bed_time),
             "Wake Time": notion_date(wake_time),
             "Training Readiness": notion_number(training_readiness),
-            "Training Status": notion_text(training_status),
+            "Training Status": notion_select(training_status),
             "Resting HR": notion_number(resting_hr),
             "Stress": notion_number(stress),
             "Calories Burned": notion_number(calories),
@@ -170,7 +181,6 @@ if not already_logged(NOTION_HEALTH_DB_ID, yesterday_str):
             properties=properties,
         )
         print(f"✅ Added Health Metrics for {yesterday_str}")
-
     except Exception as e:
         print("⚠️ Failed to push health metrics:", e)
 else:
@@ -199,7 +209,6 @@ for act in activities:
             properties=props,
         )
         print(f"✅ Logged activity: {act.get('activityName')}")
-
     except Exception as e:
         print(f"⚠️ Failed to log activity: {e}")
 
