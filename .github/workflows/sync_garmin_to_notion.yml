@@ -2,8 +2,7 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    # Every 30 min between 5:00–10:30 AM Central (UTC-6)
-    - cron: '0,30 10-15 * * *'
+    - cron: '0,30 10-15 * * *'  # every 30 min from 5:00–10:30 AM Central
   workflow_dispatch:
 
 env:
@@ -43,5 +42,4 @@ jobs:
           NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
           NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
           NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
-          TZ: 'America/Chicago'
         run: python garmin_to_notion.py
