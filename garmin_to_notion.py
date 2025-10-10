@@ -1,145 +1,199 @@
 import os
-from datetime import datetime
-from notion_client import Client
+import datetime
 from garminconnect import Garmin
+from notion_client import Client
 
-# ----------------------
-# Environment variables
-# ----------------------
-GARMIN_USERNAME = os.environ.get("GARMIN_USERNAME")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-NOTION_HEALTH_DB_ID = os.environ.get("NOTION_HEALTH_DB_ID")
-NOTION_ACTIVITIES_DB_ID = os.environ.get("NOTION_ACTIVITIES_DB_ID")
-NOTION_STEPS_DB_ID = os.environ.get("NOTION_STEPS_DB_ID")
-NOTION_SLEEP_DB_ID = os.environ.get("NOTION_SLEEP_DB_ID")
-NOTION_PR_DB_ID = os.environ.get("NOTION_PR_DB_ID")
+# ---------------------------
+# ENV VARIABLES
+# ---------------------------
+GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
+GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
+NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
 
-# ----------------------
-# Notion client
-# ----------------------
+# ---------------------------
+# CLIENTS
+# ---------------------------
 notion = Client(auth=NOTION_TOKEN)
+garmin = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
+garmin.login()
 
-# ----------------------
-# Garmin client
-# ----------------------
-garmin_client = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
-garmin_client.login()
+# ---------------------------
+# HELPERS
+# ---------------------------
+def notion_date(dt):
+    """Return Notion date object or None."""
+    if not dt:
+        return {"date": None}
+    if isinstance(dt, str):
+        return {"date": {"start": dt}}
+    return {"date": {"start": dt.isoformat()}}
 
-# ----------------------
-# Helper functions
-# ----------------------
-def build_notion_date(dt_str):
-    """Convert ISO string to Notion date object"""
-    if dt_str:
-        return {"date": {"start": dt_str}}
-    return {"date": None}
+def notion_number(value):
+    """Return Notion number property or None if empty."""
+    return {"number": float(value)} if value is not None else {"number": None}
+
+def notion_text(value):
+    """Return Notion rich_text property."""
+    if not value:
+        return {"rich_text": []}
+    return {"rich_text": [{"text": {"content": str(value)}}]}
 
 def already_logged(db_id, date_str):
-    """Check if an entry already exists for the date"""
-    try:
-        results = notion.databases.query(
-            database_id=db_id,
-            filter={"property": "Date", "date": {"equals": date_str}}
-        )
-        return len(results.get("results", [])) > 0
-    except Exception as e:
-        print(f"⚠️ Notion query error: {e}")
-        return False
-
-def push_to_notion(db_id, row, label):
-    """Push row to Notion if not already logged"""
-    date = row.get("Date", {}).get("date", {}).get("start")
-    if date and not already_logged(db_id, date):
-        notion.pages.create(parent={"database_id": db_id}, properties=row)
-        print(f"✅ Added {label} for {date}")
-    else:
-        print(f"⚠️ {label} already logged or missing")
-
-# ----------------------
-# Today's date
-# ----------------------
-today_str = datetime.now().strftime("%Y-%m-%d")
-
-# ----------------------
-# Activities
-# ----------------------
-activities = garmin_client.get_activities(1)
-activity_row = {}
-if activities:
-    act = activities[0]
-    distance_mi = round(act.get("distance", 0)/1000 * 0.621371, 2)
-    avg_speed = act.get("averageSpeed", 0)
-    avg_pace = round(60/avg_speed/0.621371, 2) if avg_speed else 0
-    activity_row = {
-        "Date": build_notion_date(act.get("startTimeLocal")[:10]),
-        "Distance (mi)": {"number": distance_mi},
-        "Duration (min)": {"number": round(act.get("duration",0)/60, 1)},
-        "Avg Pace (min/mi)": {"number": avg_pace}
-    }
-push_to_notion(NOTION_ACTIVITIES_DB_ID, activity_row, "Activity")
-
-# ----------------------
-# Daily steps
-# ----------------------
-steps_list = garmin_client.get_daily_steps(today_str, today_str)
-steps = steps_list[0] if isinstance(steps_list, list) and steps_list else {}
-steps_row = {
-    "Date": {"date": {"start": today_str}},
-    "Steps": {"number": steps.get("steps", 0)},
-}
-push_to_notion(NOTION_STEPS_DB_ID, steps_row, "Steps")
-
-# ----------------------
-# Sleep data
-# ----------------------
-sleep_list = garmin_client.get_sleep_data(today_str)
-sleep = sleep_list[0] if isinstance(sleep_list, list) and sleep_list else {}
-sleep_row = {
-    "Date": {"date": {"start": today_str}},
-    "Bedtime": build_notion_date(sleep.get("startTimeLocal")),
-    "Wake Time": build_notion_date(sleep.get("endTimeLocal")),
-    "Sleep Score": {"number": sleep.get("sleepScore", 0)},
-}
-push_to_notion(NOTION_SLEEP_DB_ID, sleep_row, "Sleep")
-
-# ----------------------
-# Body battery & health metrics
-# ----------------------
-body_battery_list = garmin_client.get_body_battery(today_str, today_str)
-body_battery = body_battery_list[0] if isinstance(body_battery_list, list) and body_battery_list else {}
-daily_summary = garmin_client.get_stats(today_str)
-
-health_row = {
-    "Date": {"date": {"start": today_str}},
-    "Body Battery": {"number": body_battery.get("bodyBatteryValue", 0)},
-    "Steps": {"number": daily_summary.get("steps", 0)},
-    "Sleep Score": {"number": daily_summary.get("sleepScore", 0)},
-    "Bodyweight (lb)": {"number": round(daily_summary.get("weight", 0) * 2.20462, 1)},
-}
-push_to_notion(NOTION_HEALTH_DB_ID, health_row, "Health Metrics")
-
-# ----------------------
-# Personal records
-# ----------------------
-pr_list = garmin_client.get_personal_record()
-if isinstance(pr_list, list):
-    for pr in pr_list:
-        pr_type = pr.get("activityType", "Unknown")
-        value = pr.get("recordValue", 0)
-        date_pr = pr.get("startTimeLocal", today_str)[:10]
-        pr_row = {
-            "Date": {"date": {"start": date_pr}},
-            "PR Type": {
-                "rich_text": [
-                    {"text": {"content": pr_type}}
-                ]
-            },
-            "Value": {
-                "rich_text": [
-                    {"text": {"content": str(value)}}
-                ]
-            },
+    """Check if a page for the date already exists."""
+    response = notion.databases.query(
+        **{
+            "database_id": db_id,
+            "filter": {"property": "Date", "date": {"equals": date_str}},
         }
-        push_to_notion(NOTION_PR_DB_ID, pr_row, "Personal Record")
+    )
+    return len(response.get("results", [])) > 0
+
+# ---------------------------
+# DATE SETUP
+# ---------------------------
+today = datetime.date.today()
+yesterday = today - datetime.timedelta(days=1)
+yesterday_str = yesterday.isoformat()
+
+print(f"📅 Collecting Garmin data for {yesterday_str}")
+
+# ---------------------------
+# FETCH DATA FROM GARMIN
+# ---------------------------
+try:
+    activities = garmin.get_activities(0, 10)
+except Exception as e:
+    print("⚠️ Failed to fetch activities:", e)
+    activities = []
+
+try:
+    steps = garmin.get_daily_steps(yesterday_str, yesterday_str)
+except Exception as e:
+    print("⚠️ Steps unavailable:", e)
+    steps = []
+
+try:
+    sleep_data = garmin.get_sleep_data(yesterday_str)
+except Exception as e:
+    print("⚠️ Sleep data unavailable:", e)
+    sleep_data = {}
+
+try:
+    body_battery = garmin.get_body_battery(yesterday_str, yesterday_str)
+except Exception as e:
+    print("⚠️ Body Battery unavailable:", e)
+    body_battery = []
+
+try:
+    body_comp = garmin.get_body_composition(yesterday_str)
+except Exception as e:
+    print("⚠️ Body composition unavailable:", e)
+    body_comp = []
+
+try:
+    readiness = garmin.get_training_readiness(yesterday_str)
+except Exception as e:
+    print("⚠️ Training readiness unavailable:", e)
+    readiness = {}
+
+try:
+    status = garmin.get_training_status(yesterday_str)
+except Exception as e:
+    print("⚠️ Training status unavailable:", e)
+    status = {}
+
+try:
+    stats = garmin.get_stats_and_body(yesterday_str)
+except Exception as e:
+    print("⚠️ Stats unavailable:", e)
+    stats = {}
+
+# ---------------------------
+# PARSE HEALTH METRICS
+# ---------------------------
+def safe_extract(data, key):
+    if isinstance(data, dict):
+        return data.get(key)
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        return data[0].get(key)
+    return None
+
+sleep_score = safe_extract(sleep_data, "sleepScore") or None
+bed_time = safe_extract(sleep_data, "sleepStartTimestampGMT")
+wake_time = safe_extract(sleep_data, "sleepEndTimestampGMT")
+
+body_battery_value = safe_extract(body_battery, "bodyBatteryValue")
+body_weight = safe_extract(body_comp, "weight")
+training_readiness = safe_extract(readiness, "trainingReadinessScore")
+training_status = safe_extract(status, "trainingStatus")
+resting_hr = safe_extract(stats, "restingHeartRate")
+stress = safe_extract(stats, "stressLevelAvg")
+calories = safe_extract(stats, "totalKilocalories")
+
+steps_total = 0
+if isinstance(steps, list) and len(steps) > 0:
+    steps_total = sum(item.get("stepsCount", 0) for item in steps)
+
+# ---------------------------
+# PUSH TO NOTION - HEALTH METRICS
+# ---------------------------
+if not already_logged(NOTION_HEALTH_DB_ID, yesterday_str):
+    try:
+        properties = {
+            "Date": notion_date(yesterday_str),
+            "Steps": notion_number(steps_total if steps_total > 0 else None),
+            "Body Weight": notion_number(body_weight),
+            "Body Battery": notion_number(body_battery_value),
+            "Sleep Score": notion_number(sleep_score),
+            "Bedtime": notion_date(bed_time),
+            "Wake Time": notion_date(wake_time),
+            "Training Readiness": notion_number(training_readiness),
+            "Training Status": notion_text(training_status),
+            "Resting HR": notion_number(resting_hr),
+            "Stress": notion_number(stress),
+            "Calories Burned": notion_number(calories),
+        }
+
+        notion.pages.create(
+            parent={"database_id": NOTION_HEALTH_DB_ID},
+            properties=properties,
+        )
+        print(f"✅ Added Health Metrics for {yesterday_str}")
+
+    except Exception as e:
+        print("⚠️ Failed to push health metrics:", e)
+else:
+    print("ℹ️ Health Metrics already logged for", yesterday_str)
+
+# ---------------------------
+# PUSH TO NOTION - ACTIVITIES
+# ---------------------------
+for act in activities:
+    try:
+        act_date = act.get("startTimeLocal", "")[:10]
+        if already_logged(NOTION_ACTIVITIES_DB_ID, act_date):
+            continue
+
+        props = {
+            "Date": notion_date(act_date),
+            "Activity Name": notion_text(act.get("activityName")),
+            "Distance (km)": notion_number(act.get("distance") / 1000 if act.get("distance") else None),
+            "Calories": notion_number(act.get("calories")),
+            "Duration (min)": notion_number(round(act.get("duration") / 60, 1) if act.get("duration") else None),
+            "Type": notion_text(act.get("activityType", {}).get("typeKey")),
+        }
+
+        notion.pages.create(
+            parent={"database_id": NOTION_ACTIVITIES_DB_ID},
+            properties=props,
+        )
+        print(f"✅ Logged activity: {act.get('activityName')}")
+
+    except Exception as e:
+        print(f"⚠️ Failed to log activity: {e}")
+
+garmin.logout()
+print("🏁 Sync complete.")
 
