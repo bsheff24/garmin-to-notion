@@ -6,12 +6,11 @@ on:
     - cron: '0,30 10-15 * * *'
   workflow_dispatch:
 
-env:
-  TZ: 'America/Chicago'
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      TZ: 'America/Chicago'
     steps:
       - uses: actions/checkout@v2
 
