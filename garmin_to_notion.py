@@ -1,9 +1,11 @@
 import os
-from datetime import date, datetime
+from datetime import datetime
 from notion_client import Client
 from garminconnect import Garmin
 
-# Load environment variables
+# ----------------------
+# 1. Load environment variables
+# ----------------------
 GARMIN_USERNAME = os.environ.get("GARMIN_USERNAME")
 GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
@@ -13,15 +15,19 @@ NOTION_STEPS_DB_ID = os.environ.get("NOTION_STEPS_DB_ID")
 NOTION_SLEEP_DB_ID = os.environ.get("NOTION_SLEEP_DB_ID")
 NOTION_PR_DB_ID = os.environ.get("NOTION_PR_DB_ID")
 
-# Connect to Notion
+# ----------------------
+# 2. Connect to Notion
+# ----------------------
 notion = Client(auth=NOTION_TOKEN)
 
-# Connect to Garmin
+# ----------------------
+# 3. Connect to Garmin
+# ----------------------
 garmin_client = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
 garmin_client.login()  # Works in GitHub workflow
 
 # ----------------------
-# Helper functions
+# 4. Helpers
 # ----------------------
 def km_to_miles(km):
     return round(km * 0.621371, 2)
@@ -36,13 +42,16 @@ def already_logged(db_id, date_str):
     )
     return len(results.get("results", [])) > 0
 
-today = date.today()
-today_str = today.strftime("%Y-%m-%d")
+# ----------------------
+# 5. Prepare today's date
+# ----------------------
+today_str = datetime.now().strftime("%Y-%m-%d")
 
 # ----------------------
-# 1. Pull Garmin data
+# 6. Pull Garmin data
 # ----------------------
-# Activities (latest only)
+
+# Latest activity
 activities = garmin_client.get_activities(1)
 activity_row = {}
 if activities:
@@ -50,12 +59,12 @@ if activities:
     activity_row = {
         "Date": {"date": {"start": act.get("startTimeLocal")[:10]}},
         "Distance (mi)": {"number": km_to_miles(act.get("distance", 0)/1000)},
-        "Duration (min)": {"number": round(act.get("duration", 0)/60, 1)},
+        "Duration (min)": {"number": round(act.get("duration",0)/60,1)},
         "Avg Pace (min/mi)": {"number": min_per_km_to_min_per_mile(act.get("averageSpeed",0) and 60/act["averageSpeed"] or 0)}
     }
 
 # Steps
-steps_data = garmin_client.get_daily_steps(today_str)
+steps_data = garmin_client.get_daily_steps(today_str, today_str)
 steps_row = {
     "Date": {"date": {"start": today_str}},
     "Steps": {"number": steps_data.get("steps", 0)}
@@ -66,41 +75,75 @@ sleep_data = garmin_client.get_sleep_data(today_str)
 sleep_row = {
     "Date": {"date": {"start": today_str}},
     "Sleep Score": {"number": sleep_data.get("sleepScore", 0)},
-    "Bedtime": {"rich_text": [{"text": {"content": sleep_data.get("startTimeLocal", "")}}]},
-    "Wake Time": {"rich_text": [{"text": {"content": sleep_data.get("endTimeLocal", "")}}]}
+    "Bedtime": {"date": {"start": sleep_data.get("startTime")}},
+    "Wake Time": {"date": {"start": sleep_data.get("endTime")}}
 }
 
-# Body metrics
-body_stats = garmin_client.get_stats_and_body(today_str)
-health_row = {
+# Body battery
+body_battery_data = garmin_client.get_body_battery(today_str, today_str)
+body_row = {
     "Date": {"date": {"start": today_str}},
-    "Bodyweight (lb)": {"number": round(body_stats.get("weight", 0) * 2.20462, 1)},
-    "Body Battery": {"number": body_stats.get("bodyBattery", 0)},
-    "Training Readiness": {"number": body_stats.get("trainingReadiness", 0)},
-    "Training Status": {"rich_text": [{"text": {"content": body_stats.get("trainingStatus", "")}}]}
+    "Body Battery": {"number": body_battery_data.get("bodyBattery", 0)}
 }
 
-# Personal Records
+# Training readiness & status
+training_readiness_data = garmin_client.get_training_readiness(today_str, today_str)
+training_row = {
+    "Date": {"date": {"start": today_str}},
+    "Training Readiness": {"number": training_readiness_data.get("score", 0)},
+    "Training Status": {"rich_text": [{"text": {"content": training_readiness_data.get("status", "")}}]}
+}
+
+# Personal records
 pr_list = garmin_client.get_personal_record()
-pr_row = {
-    "Date": {"date": {"start": today_str}}
-}
+pr_row = {}
 for pr in pr_list:
-    pr_row[pr["activityType"]] = {"number": pr["distance"]}  # Adjust property type in Notion if needed
+    pr_row[pr["type"]] = {"number": pr["value"]}
 
 # ----------------------
-# 2. Push to Notion
+# 7. Push to Notion
 # ----------------------
-def push_to_notion(row, db_id, name="row"):
-    if row and not already_logged(db_id, row["Date"]["date"]["start"]):
-        notion.pages.create(parent={"database_id": db_id}, properties=row)
-        print(f"✅ {name} added for {row['Date']['date']['start']}")
+# Activities DB
+if activity_row and not already_logged(NOTION_ACTIVITIES_DB_ID, activity_row["Date"]["date"]["start"]):
+    notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_row)
+    print(f"✅ Activity added for {activity_row['Date']['date']['start']}")
+else:
+    print(f"⚠️ Activity already logged or missing")
+
+# Steps DB
+if steps_row and not already_logged(NOTION_STEPS_DB_ID, today_str):
+    notion.pages.create(parent={"database_id": NOTION_STEPS_DB_ID}, properties=steps_row)
+    print(f"✅ Steps added for {today_str}")
+else:
+    print(f"⚠️ Steps already logged or missing")
+
+# Sleep DB
+if sleep_row and not already_logged(NOTION_SLEEP_DB_ID, today_str):
+    notion.pages.create(parent={"database_id": NOTION_SLEEP_DB_ID}, properties=sleep_row)
+    print(f"✅ Sleep added for {today_str}")
+else:
+    print(f"⚠️ Sleep already logged or missing")
+
+# Body Battery / Health Metrics DB
+if body_row and not already_logged(NOTION_HEALTH_DB_ID, today_str):
+    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=body_row)
+    print(f"✅ Body battery added for {today_str}")
+else:
+    print(f"⚠️ Body battery already logged or missing")
+
+# Training Readiness DB
+if training_row and not already_logged(NOTION_HEALTH_DB_ID, today_str):
+    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=training_row)
+    print(f"✅ Training readiness added for {today_str}")
+else:
+    print(f"⚠️ Training readiness already logged or missing")
+
+# Personal Records DB
+if pr_row:
+    pr_row["Date"] = {"date": {"start": today_str}}
+    if not already_logged(NOTION_PR_DB_ID, today_str):
+        notion.pages.create(parent={"database_id": NOTION_PR_DB_ID}, properties=pr_row)
+        print(f"✅ Personal records updated for {today_str}")
     else:
-        print(f"⚠️ {name} already logged or missing")
-
-push_to_notion(activity_row, NOTION_ACTIVITIES_DB_ID, "Activity")
-push_to_notion(steps_row, NOTION_STEPS_DB_ID, "Steps")
-push_to_notion(sleep_row, NOTION_SLEEP_DB_ID, "Sleep")
-push_to_notion(health_row, NOTION_HEALTH_DB_ID, "Health metrics")
-push_to_notion(pr_row, NOTION_PR_DB_ID, "Personal records")
+        print(f"⚠️ Personal records already logged for {today_str}")
 
