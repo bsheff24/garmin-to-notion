@@ -2,7 +2,7 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    - cron: '0,30 10-15 * * *'  # Every 30 min between 5:00–10:30 AM Central
+    - cron: '0 10 * * *' # Every day at 5 AM Central
   workflow_dispatch:
 
 env:
@@ -19,27 +19,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
 
-      - name: Run Garmin to Notion script
+      - name: Run Garmin to Notion
         env:
           GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_HEALTH_DB_ID: ${{ secrets.NOTION_HEALTH_DB_ID }}
           NOTION_ACTIVITIES_DB_ID: ${{ secrets.NOTION_ACTIVITIES_DB_ID }}
-          NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
-          NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
-          NOTION_PR_DB_ID: ${{ secrets.NOTION_PR_DB_ID }}
         run: python garmin_to_notion.py
