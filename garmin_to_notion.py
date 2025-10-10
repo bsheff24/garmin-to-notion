@@ -1,166 +1,165 @@
 import os
-from datetime import datetime
-from notion_client import Client
+import datetime
 from garminconnect import Garmin
+from notion_client import Client
+from notion_client.errors import APIResponseError
 
-# ----------------------------
-# Load environment variables
-# ----------------------------
-GARMIN_USERNAME = os.environ.get("GARMIN_USERNAME")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-NOTION_HEALTH_DB_ID = os.environ.get("NOTION_HEALTH_DB_ID")
-NOTION_ACTIVITIES_DB_ID = os.environ.get("NOTION_ACTIVITIES_DB_ID")
-NOTION_STEPS_DB_ID = os.environ.get("NOTION_STEPS_DB_ID")
-NOTION_SLEEP_DB_ID = os.environ.get("NOTION_SLEEP_DB_ID")
-NOTION_PR_DB_ID = os.environ.get("NOTION_PR_DB_ID")
+# -----------------------------
+# Helper Functions
+# -----------------------------
 
-# ----------------------------
-# Connect to services
-# ----------------------------
-notion = Client(auth=NOTION_TOKEN)
+def build_notion_date(dt):
+    """Convert datetime or string into Notion date format."""
+    if not dt:
+        return {"date": None}
+    if isinstance(dt, datetime.datetime):
+        return {"date": {"start": dt.isoformat()}}
+    if isinstance(dt, str):
+        return {"date": {"start": dt}}
+    return {"date": None}
 
-garmin_client = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
-garmin_client.login()
+def already_logged(notion, db_id, date):
+    """Check if entry already exists for a given date."""
+    try:
+        results = notion.databases.query(
+            **{
+                "database_id": db_id,
+                "filter": {
+                    "property": "Date",
+                    "date": {
+                        "equals": date
+                    }
+                }
+            }
+        )
+        return len(results.get("results", [])) > 0
+    except APIResponseError as e:
+        print(f"⚠️ Error checking for existing entries: {e}")
+        return False
 
-# ----------------------------
-# Helper functions
-# ----------------------------
-def km_to_miles(km):
-    return round(km * 0.621371, 2)
-
-def min_per_km_to_min_per_mile(pace_km):
-    return round(pace_km / 0.621371, 2)
-
-def already_logged(db_id, date_str):
-    results = notion.databases.query(
-        database_id=db_id,
-        filter={"property": "Date", "date": {"equals": date_str}}
-    )
-    return len(results.get("results", [])) > 0
-
-def safe_get(data, key, default=None):
-    """Safely get nested dict values without crashing."""
-    if isinstance(data, dict):
-        return data.get(key, default)
-    return default
-
-# ----------------------------
-# Dates
-# ----------------------------
-today_str = datetime.now().strftime("%Y-%m-%d")
-
-# ----------------------------
-# 1. Garmin Data Retrieval
-# ----------------------------
-# Latest activity
-activities = garmin_client.get_activities(1)
-activity_row = {}
-if activities:
-    act = activities[0]
-    activity_row = {
-        "Date": {"date": {"start": act.get("startTimeLocal", today_str)[:10]}},
-        "Distance (mi)": {"number": km_to_miles(act.get("distance", 0) / 1000)},
-        "Duration (min)": {"number": round(act.get("duration", 0) / 60, 1)},
-        "Avg Pace (min/mi)": {
-            "number": min_per_km_to_min_per_mile(60 / act["averageSpeed"]) if act.get("averageSpeed") else 0
-        }
-    }
-
-# Daily summary
-try:
-    daily_summary = garmin_client.get_stats(today_str)
-except Exception:
-    daily_summary = {}
-
-health_row = {
-    "Date": {"date": {"start": today_str}},
-    "Steps": {"number": safe_get(daily_summary, "steps", 0)},
-    "Sleep Score": {"number": safe_get(daily_summary, "sleepScore", 0)},
-    "Bodyweight (lb)": {"number": safe_get(daily_summary, "weight", 0) * 2.20462 if safe_get(daily_summary, "weight") else 0}
-}
-
-# Steps
-try:
-    steps_list = garmin_client.get_daily_steps(today_str, today_str)
-    steps_total = 0
-    if isinstance(steps_list, list) and steps_list:
-        steps_total = steps_list[0].get("steps", 0)
-    elif isinstance(steps_list, dict):
-        steps_total = steps_list.get("steps", 0)
-except Exception:
-    steps_total = 0
-
-steps_row = {
-    "Date": {"date": {"start": today_str}},
-    "Steps": {"number": steps_total}
-}
-
-# Sleep
-try:
-    sleep_data = garmin_client.get_sleep_data(today_str)
-except Exception:
-    sleep_data = {}
-
-sleep_row = {}
-if sleep_data:
-    start = safe_get(sleep_data, "sleepStartTimestampLocal", "")
-    end = safe_get(sleep_data, "sleepEndTimestampLocal", "")
-    score = safe_get(sleep_data, "sleepScoreFeedback", {}).get("sleepScore", 0)
-    sleep_row = {
-        "Date": {"date": {"start": today_str}},
-        "Bedtime": {"rich_text": [{"text": {"content": start}}]},
-        "Wake Time": {"rich_text": [{"text": {"content": end}}]},
-        "Sleep Score": {"number": score}
-    }
-
-# Body Battery
-try:
-    body_battery = garmin_client.get_body_battery(today_str)
-except Exception:
-    body_battery = {}
-
-body_row = {
-    "Date": {"date": {"start": today_str}},
-    "Body Battery": {"number": safe_get(body_battery, "bodyBattery", 0)}
-}
-
-# Personal Records
-try:
-    pr_list = garmin_client.get_personal_record()
-except Exception:
-    pr_list = []
-
-pr_rows = []
-if isinstance(pr_list, list):
-    for pr in pr_list:
-        pr_rows.append({
-            "Date": {"date": {"start": today_str}},
-            "Record Type": {"rich_text": [{"text": {"content": pr.get("typeName", "")}}]},
-            "Value": {"number": pr.get("value", 0)}
-        })
-
-# ----------------------------
-# 2. Push to Notion
-# ----------------------------
-def push_to_notion(db_id, row, label):
-    if not db_id or not row:
-        print(f"⚠️ Skipped {label} - missing data or DB ID")
-        return
-    date = row["Date"]["date"]["start"]
-    if already_logged(db_id, date):
+def push_to_notion(notion, db_id, data, label):
+    """Push a new row to Notion if not already logged."""
+    date = data["Date"]["date"]["start"]
+    if already_logged(notion, db_id, date):
         print(f"⏩ {label} already logged for {date}")
         return
-    notion.pages.create(parent={"database_id": db_id}, properties=row)
+    notion.pages.create(parent={"database_id": db_id}, properties=data)
     print(f"✅ Added {label} for {date}")
 
-push_to_notion(NOTION_ACTIVITIES_DB_ID, activity_row, "Activity")
-push_to_notion(NOTION_HEALTH_DB_ID, health_row, "Health")
-push_to_notion(NOTION_STEPS_DB_ID, steps_row, "Steps")
-push_to_notion(NOTION_SLEEP_DB_ID, sleep_row, "Sleep")
-push_to_notion(NOTION_HEALTH_DB_ID, body_row, "Body Battery")
+# -----------------------------
+# Main Logic
+# -----------------------------
 
-for pr_row in pr_rows:
-    push_to_notion(NOTION_PR_DB_ID, pr_row, f"PR ({pr_row['Record Type']['rich_text'][0]['text']['content']})")
+garmin_user = os.getenv("GARMIN_USERNAME")
+garmin_pass = os.getenv("GARMIN_PASSWORD")
+notion_token = os.getenv("NOTION_TOKEN")
 
-print("🏁 Sync complete.")
+NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
+NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
+NOTION_STEPS_DB_ID = os.getenv("NOTION_STEPS_DB_ID")
+NOTION_SLEEP_DB_ID = os.getenv("NOTION_SLEEP_DB_ID")
+NOTION_PR_DB_ID = os.getenv("NOTION_PR_DB_ID")
+
+notion = Client(auth=notion_token)
+
+garmin_client = Garmin(garmin_user, garmin_pass)
+garmin_client.login()
+
+today = datetime.date.today()
+today_str = today.isoformat()
+
+# -----------------------------
+# Garmin Data Fetching
+# -----------------------------
+
+print("📡 Fetching data from Garmin...")
+
+try:
+    body_battery = garmin_client.get_body_battery(today_str)
+    training_readiness = garmin_client.get_training_readiness(today_str)
+    training_status = garmin_client.get_training_status(today_str)
+    steps_data = garmin_client.get_daily_steps(today_str, today_str)
+    sleep_data = garmin_client.get_sleep_data(today_str)
+    pr_data = garmin_client.get_personal_record()
+except Exception as e:
+    print(f"❌ Error fetching data from Garmin: {e}")
+    garmin_client.logout()
+    raise
+
+# -----------------------------
+# Sleep Data Handling
+# -----------------------------
+
+sleep = sleep_data.get("dailySleepDTO") if isinstance(sleep_data, dict) else None
+sleep_score = sleep.get("sleepScores", {}).get("overall", {}).get("value") if sleep else None
+bedtime = sleep.get("sleepStartTimestampLocal") if sleep else None
+wake_time = sleep.get("sleepEndTimestampLocal") if sleep else None
+duration_ms = sleep.get("sleepTimeSeconds", 0) if sleep else 0
+duration_hours = round(duration_ms / 3600, 2)
+
+sleep_row = {
+    "Name": {"title": [{"text": {"content": f"Sleep — {today_str}"}}]},
+    "Date": build_notion_date(today),
+    "Sleep Score": {"number": sleep_score},
+    "Duration (Hours)": {"number": duration_hours},
+    "Bedtime": build_notion_date(bedtime),
+    "Wake Time": build_notion_date(wake_time),
+}
+
+# -----------------------------
+# Health Data
+# -----------------------------
+
+health_row = {
+    "Name": {"title": [{"text": {"content": f"Health — {today_str}"}}]},
+    "Date": build_notion_date(today),
+    "Body Battery": {"number": body_battery.get("bodyBatteryValue", 0) if body_battery else 0},
+    "Training Readiness": {"number": training_readiness.get("trainingReadinessScore", 0) if training_readiness else 0},
+    "Training Status": {"rich_text": [{"text": {"content": training_status.get("trainingStatus", "Unknown")}}]},
+}
+
+# -----------------------------
+# Steps Data
+# -----------------------------
+
+steps_total = 0
+if isinstance(steps_data, list) and len(steps_data) > 0:
+    steps_total = steps_data[0].get("totalSteps", 0)
+
+steps_row = {
+    "Name": {"title": [{"text": {"content": f"Steps — {today_str}"}}]},
+    "Date": build_notion_date(today),
+    "Steps": {"number": steps_total},
+}
+
+# -----------------------------
+# Personal Records Data
+# -----------------------------
+
+pr_row = {
+    "Name": {"title": [{"text": {"content": f"PR — {today_str}"}}]},
+    "Date": build_notion_date(today),
+}
+
+if isinstance(pr_data, list):
+    for item in pr_data:
+        name = item.get("typeKey", "Unknown")
+        value = item.get("value", 0)
+        if isinstance(value, (int, float)):
+            pr_row[name] = {"number": value}
+        elif isinstance(value, str):
+            pr_row[name] = {"rich_text": [{"text": {"content": value}}]}
+
+# -----------------------------
+# Push to Notion
+# -----------------------------
+
+print("🚀 Pushing to Notion...")
+
+push_to_notion(notion, NOTION_HEALTH_DB_ID, health_row, "Health")
+push_to_notion(notion, NOTION_STEPS_DB_ID, steps_row, "Steps")
+push_to_notion(notion, NOTION_SLEEP_DB_ID, sleep_row, "Sleep")
+push_to_notion(notion, NOTION_PR_DB_ID, pr_row, "PR")
+
+garmin_client.logout()
+print("✅ Sync complete.")
