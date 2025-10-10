@@ -90,4 +90,31 @@ body_battery = body_battery_list[0] if body_battery_list else {}
 health_row = {
     "Date": {"date": {"start": today_str}},
     "Bodyweight (lb)": {"number": daily_summary.get("weight", 0) * 2.20462},
-    "Body Battery": {"num
+    "Body Battery": {"number": body_battery.get("bodyBatteryValue", 0) if body_battery else 0},
+}
+push_to_notion(NOTION_HEALTH_DB_ID, health_row, "Health Metrics")
+
+# ----------------------
+# Sleep
+# ----------------------
+sleep_list = garmin_client.get_sleep_data(today_str)
+sleep = sleep_list[0] if isinstance(sleep_list, list) and sleep_list else {}
+bedtime = sleep.get("startTimeLocal")
+wake_time = sleep.get("endTimeLocal")
+sleep_score = sleep.get("sleepScore", 0)
+sleep_row = {
+    "Date": {"date": {"start": today_str}},
+    "Bedtime": build_notion_date(bedtime),
+    "Wake Time": build_notion_date(wake_time),
+    "Sleep Score": {"number": sleep_score},
+}
+push_to_notion(NOTION_SLEEP_DB_ID, sleep_row, "Sleep")
+
+# ----------------------
+# Personal Records
+# ----------------------
+pr_list = garmin_client.get_personal_record()
+pr_row = {"Date": {"date": {"start": today_str}}}
+for pr in pr_list:
+    pr_row[pr.get("activityType", "PR")] = {"number": pr.get("value", 0)}
+push_to_notion(NOTION_PR_DB_ID, pr_row, "Personal Records")
