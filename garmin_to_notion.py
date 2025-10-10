@@ -105,7 +105,7 @@ health_row = {
 }
 
 # Personal Records (PRs)
-pr_data = garmin_client.get_personal_records()
+pr_data = garmin_client.get_personal_record()
 pr_rows = []
 if pr_data:
     for pr_type, value in pr_data.items():
