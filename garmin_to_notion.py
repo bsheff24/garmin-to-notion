@@ -139,6 +139,16 @@ if isinstance(steps, list) and len(steps) > 0:
 # ---------------------------
 # PUSH TO NOTION - HEALTH METRICS
 # ---------------------------
+print("DEBUG: Garmin raw data preview ---------------------")
+print("Body composition:", body_comp if body_comp else "No body data")
+print("Sleep data:", sleep_data if sleep_data else "No sleep data")
+print("Body battery:", body_battery if body_battery else "No body battery")
+print("Training readiness:", training_readiness if training_readiness else "No readiness data")
+print("Training status:", training_status if training_status else "No training status")
+print("Steps data:", steps if steps else "No steps data")
+print("-----------------------------------------------------")
+
+
 if not already_logged(NOTION_HEALTH_DB_ID, yesterday_str):
     try:
         properties = {
