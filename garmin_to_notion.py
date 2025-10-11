@@ -4,7 +4,7 @@ import logging
 import pprint
 from garminconnect import Garmin
 from notion_client import Client
-from zoneinfo import ZoneInfo  # Python >=3.9 for timezone handling
+from zoneinfo import ZoneInfo  # Python >=3.9
 
 # ---------------------------
 # ENV VARIABLES
@@ -64,23 +64,6 @@ def safe_fetch(func, *args):
         logging.warning(f"⚠️ {func.__name__} unavailable: {e}")
         return None
 
-import pprint
-
-logging.info("🔍 RAW Garmin Data Snapshots for Debugging")
-
-logging.info("=== sleep_daily ===")
-pprint.pprint(sleep_data.get("dailySleepDTO", {}))
-
-logging.info("=== body_battery ===")
-pprint.pprint(body_battery)
-
-logging.info("=== readiness ===")
-pprint.pprint(readiness)
-
-logging.info("=== stats ===")
-pprint.pprint(stats)
-
-
 def extract_value(data, keys):
     if not data:
         return None
@@ -131,22 +114,34 @@ body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str)
 body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
 readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
 status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
-stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
+stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or []
+
+# ---------------------------
+# DEBUG RAW DATA
+# ---------------------------
+logging.info("🔍 RAW Garmin Data Snapshots for Debugging")
+logging.info("=== sleep_daily ===")
+pprint.pprint(sleep_data.get("dailySleepDTO", {}))
+logging.info("=== body_battery ===")
+pprint.pprint(body_battery)
+logging.info("=== readiness ===")
+pprint.pprint(readiness)
+logging.info("=== stats ===")
+pprint.pprint(stats)
 
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-# Attempt to get sleep score safely
 sleep_score = (
-    sleep_daily.get("sleepScore") or
-    sleep_daily.get("summary", {}).get("sleepScore") or
-    0
+    sleep_daily.get("sleepScore")
+    or sleep_daily.get("summary", {}).get("sleepScore")
+    or extract_value(sleep_daily, ["score", "overallScore"])
+    or 0
 )
 bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
 wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-# Body Battery Min/Max
 body_battery_combined = "N/A"
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
@@ -155,30 +150,29 @@ if isinstance(body_battery, list) and len(body_battery) > 0:
     if values:
         body_battery_combined = f"{min(values)} / {max(values)}"
 
-# Body Weight
 body_weight = None
 if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
         body_weight = round(float(w_raw) / 453.592, 2)
 
-# Training Readiness
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-# Training Status
 training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
 feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
-if "RECOVERING" in str(feedback_hint).upper():
+readiness_hint = extract_value(readiness, ["trainingReadinessFeedback", "feedback"]) or ""
+
+if "RECOVERING" in str(feedback_hint).upper() or "RECOVERING" in str(readiness_hint).upper():
     training_status_val = "Recovery"
 elif isinstance(training_status_val, (int, float)):
     training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
 else:
     training_status_val = "Maintaining"
 
-# Stress / HR / Calories / Steps
 stress = (
     extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
+    or extract_value(stats.get("stress", {}), ["stressLevel"])
     or 0
 )
 resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
@@ -252,3 +246,4 @@ for act in activities:
 
 garmin.logout()
 logging.info("🏁 Sync complete.")
+
