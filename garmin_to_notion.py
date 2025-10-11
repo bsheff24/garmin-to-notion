@@ -58,6 +58,11 @@ def notion_title(value):
         value = "N/A"
     return {"title": [{"text": {"content": str(value)}}]}
 
+def notion_text(value):
+    if not value:
+        value = "N/A"
+    return {"rich_text": [{"text": {"content": str(value)}}]}
+
 def safe_fetch(func, *args):
     try:
         return func(*args)
@@ -186,7 +191,7 @@ health_props = {
     "Date": notion_date(yesterday),
     "Steps": notion_number(steps_total),
     "Body Weight": notion_number(body_weight),
-    "Body Battery (Min/Max)": notion_title(body_battery_combined),
+    "Body Battery (Min/Max)": notion_text(body_battery_combined),
     "Sleep Score": notion_number(sleep_score),
     "Bedtime": notion_date(bed_time),
     "Wake Time": notion_date(wake_time),
@@ -201,8 +206,9 @@ logging.info("📤 Pushing the following properties to Notion:")
 pprint.pprint(health_props)
 
 try:
-    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
-    logging.info(f"✅ Synced health metrics for {yesterday_str}")
+    result = notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
+    logging.info("✅ Notion API response:")
+    pprint.pprint(result)
 except Exception as e:
     logging.error(f"⚠️ Failed to push health metrics: {e}")
 
