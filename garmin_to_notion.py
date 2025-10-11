@@ -39,7 +39,16 @@ def notion_date(dt):
     return {"date": {"start": str(dt)}}
 
 def notion_number(value):
-    return {"number": float(value)} if value is not None else {"number": None}
+    if value is None:
+        return {"number": None}
+    # Only convert if it's int, float, or string
+    if isinstance(value, (int, float, str)):
+        try:
+            return {"number": float(value)}
+        except Exception:
+            return {"number": None}
+    # If value is a dict or other type, return None
+    return {"number": None}
 
 def notion_select(value):
     if not value:
@@ -195,4 +204,3 @@ for act in activities:
 
 garmin.logout()
 logging.info("🏁 Sync complete.")
-
