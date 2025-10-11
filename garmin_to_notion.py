@@ -103,7 +103,7 @@ body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str)
 body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
 readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
 status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
-stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
+stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or []
 
 # ---------------------------
 # DEBUG RAW GARMIN DATA
@@ -147,7 +147,7 @@ if body_comp.get("dateWeightList"):
 # --- Training Readiness ---
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
 
-# --- Training Status (map to Notion options) ---
+# --- Training Status ---
 training_status_map = {
     2: "Maintaining",
     3: "Recovery",
@@ -187,7 +187,7 @@ logging.info(f"  Stress: {stress}")
 logging.info(f"  Calories Burned: {calories}")
 
 # ---------------------------
-# PUSH TO NOTION
+# PUSH TO NOTION (CLEANED)
 # ---------------------------
 health_props = {
     "Name": notion_title(yesterday_str),
@@ -206,12 +206,29 @@ health_props = {
     "Calories Burned": notion_number(calories),
 }
 
-logging.info("📤 Pushing Garmin health metrics to Notion...")
-try:
-    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
-    logging.info(f"✅ Synced health metrics for {yesterday_str}")
-except Exception as e:
-    logging.error(f"⚠️ Failed to push health metrics: {e}")
+# Clean out any invalid / None properties
+def clean_notion_props(props):
+    cleaned = {}
+    for k, v in props.items():
+        if not v or v == {"number": None} or v == {"date": None} or v == {"select": None}:
+            continue
+        cleaned[k] = v
+    return cleaned
+
+health_props_cleaned = clean_notion_props(health_props)
+
+logging.info("📤 Properties to push to Notion (cleaned):")
+pprint.pprint(health_props_cleaned)
+
+# Only push if we have at least one valid property
+if health_props_cleaned:
+    try:
+        notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props_cleaned)
+        logging.info(f"✅ Synced health metrics for {yesterday_str}")
+    except Exception as e:
+        logging.error(f"⚠️ Failed to push health metrics: {e}")
+else:
+    logging.warning("⚠️ No valid properties to push to Notion. Skipping page creation.")
 
 # ---------------------------
 # PUSH ACTIVITIES
