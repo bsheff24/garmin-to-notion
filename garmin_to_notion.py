@@ -196,7 +196,7 @@ health_props = {
     "Date": notion_date(yesterday),
     "Steps": notion_number(steps_total),
     "Body Weight": notion_number(body_weight),
-    "Body Battery": notion_title(body_battery_combined),
+    "Body Battery (Min/Max)": notion_title(body_battery_combined),
     "Sleep Score": notion_number(sleep_score),
     "Bedtime": notion_date(bed_time),
     "Wake Time": notion_date(wake_time),
