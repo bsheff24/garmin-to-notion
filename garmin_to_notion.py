@@ -4,6 +4,7 @@ import logging
 import pprint
 from garminconnect import Garmin
 from notion_client import Client
+from zoneinfo import ZoneInfo  # Python >=3.9 for timezone handling
 
 # ---------------------------
 # ENV VARIABLES
@@ -13,6 +14,7 @@ GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
 NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
+LOCAL_TZ = ZoneInfo("America/New_York")  # Replace with your timezone
 
 # ---------------------------
 # LOGGING
@@ -44,24 +46,16 @@ def notion_date(dt):
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
-    if value is None:
-        return {"number": 0}
-    return {"number": float(value)}
+    return {"number": float(value) if value is not None else 0}
 
 def notion_select(value):
-    if not value:
-        return {"select": {"name": "N/A"}}
-    return {"select": {"name": str(value)}}
+    return {"select": {"name": str(value) if value else "N/A"}}
 
 def notion_title(value):
-    if not value:
-        value = "N/A"
-    return {"title": [{"text": {"content": str(value)}}]}
+    return {"title": [{"text": {"content": str(value) if value else "N/A"}}]}
 
 def notion_text(value):
-    if not value:
-        value = "N/A"
-    return {"rich_text": [{"text": {"content": str(value)}}]}
+    return {"rich_text": [{"text": {"content": str(value) if value else "N/A"}}]}
 
 def safe_fetch(func, *args):
     try:
@@ -97,7 +91,8 @@ def convert_gmt_to_local(ts):
     if not ts:
         return None
     try:
-        return datetime.datetime.fromtimestamp(ts / 1000)
+        dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
+        return dt.astimezone(LOCAL_TZ)
     except:
         return None
 
@@ -125,22 +120,23 @@ stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"]) or 0
-bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT")) or None
-wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT")) or None
+# Attempt to get sleep score safely
+sleep_score = (
+    sleep_daily.get("sleepScore") or
+    sleep_daily.get("summary", {}).get("sleepScore") or
+    0
+)
+bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
+wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
 # Body Battery Min/Max
-body_battery_min = None
-body_battery_max = None
 body_battery_combined = "N/A"
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
     arr = bb.get("bodyBatteryValuesArray") or []
     values = [v[1] for v in arr if isinstance(v, list) and len(v) > 1]
     if values:
-        body_battery_min = min(values)
-        body_battery_max = max(values)
-        body_battery_combined = f"{body_battery_min} / {body_battery_max}"
+        body_battery_combined = f"{min(values)} / {max(values)}"
 
 # Body Weight
 body_weight = None
@@ -155,14 +151,19 @@ training_readiness = extract_value(readiness, ["score", "trainingReadinessScore"
 # Training Status
 training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-if isinstance(training_status_val, (int, float)):
-    training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
-feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
-if feedback_hint and "RECOVERING" in str(feedback_hint).upper():
+feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
+if "RECOVERING" in str(feedback_hint).upper():
     training_status_val = "Recovery"
+elif isinstance(training_status_val, (int, float)):
+    training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
+else:
+    training_status_val = "Maintaining"
 
 # Stress / HR / Calories / Steps
-stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"]) or 0
+stress = (
+    extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
+    or 0
+)
 resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
 calories = extract_value(stats, ["totalKilocalories", "active_calories"]) or 0
 steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
