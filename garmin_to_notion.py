@@ -32,7 +32,7 @@ garmin.login()
 # ---------------------------
 def notion_date(dt):
     if not dt:
-        return {"date": None}
+        return {"date": {"start": None}}
     if isinstance(dt, str):
         try:
             dt = datetime.datetime.fromisoformat(dt)
@@ -40,22 +40,22 @@ def notion_date(dt):
             try:
                 dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
             except Exception:
-                return {"date": None}
+                return {"date": {"start": None}}
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
     if value is None:
-        return {"number": None}
+        return {"number": 0}
     return {"number": float(value)}
 
 def notion_select(value):
     if not value:
-        return {"select": None}
+        return {"select": {"name": "N/A"}}
     return {"select": {"name": str(value)}}
 
 def notion_title(value):
     if not value:
-        return {"title": []}
+        value = "N/A"
     return {"title": [{"text": {"content": str(value)}}]}
 
 def safe_fetch(func, *args):
@@ -91,7 +91,10 @@ def extract_value(data, keys):
 def convert_gmt_to_local(ts):
     if not ts:
         return None
-    return datetime.datetime.fromtimestamp(ts / 1000)
+    try:
+        return datetime.datetime.fromtimestamp(ts / 1000)
+    except:
+        return None
 
 # ---------------------------
 # DATE SETUP
@@ -110,23 +113,21 @@ sleep_data = safe_fetch(garmin.get_sleep_data, yesterday_str) or {}
 body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str) or []
 body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
 readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
-status = safe_fetch(garmin.get_training_status, yesterday_str) or []
+status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
 stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
-
-# --- Sleep ---
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"])
-bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
-wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
+sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"]) or 0
+bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT")) or None
+wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT")) or None
 
-# --- Body Battery Min/Max ---
+# Body Battery Min/Max
 body_battery_min = None
 body_battery_max = None
-body_battery_combined = None
+body_battery_combined = "N/A"
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
     arr = bb.get("bodyBatteryValuesArray") or []
@@ -136,17 +137,17 @@ if isinstance(body_battery, list) and len(body_battery) > 0:
         body_battery_max = max(values)
         body_battery_combined = f"{body_battery_min} / {body_battery_max}"
 
-# --- Body Weight ---
+# Body Weight
 body_weight = None
 if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
         body_weight = round(float(w_raw) / 453.592, 2)
 
-# --- Training Readiness ---
-training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
+# Training Readiness
+training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-# --- Training Status ---
+# Training Status
 training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
 if isinstance(training_status_val, (int, float)):
@@ -155,10 +156,10 @@ feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongT
 if feedback_hint and "RECOVERING" in str(feedback_hint).upper():
     training_status_val = "Recovery"
 
-# --- Stress / HR / Calories / Steps ---
-stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
-resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"])
-calories = extract_value(stats, ["totalKilocalories", "active_calories"])
+# Stress / HR / Calories / Steps
+stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"]) or 0
+resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
+calories = extract_value(stats, ["totalKilocalories", "active_calories"]) or 0
 steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
 # ---------------------------
@@ -166,11 +167,11 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 # ---------------------------
 logging.info("🧠 Garmin health metrics summary:")
 logging.info(f"  Steps: {steps_total}")
-logging.info(f"  Body Weight: {body_weight}")
+logging.info(f"  Body Weight: {body_weight or 'N/A'}")
 logging.info(f"  Body Battery (Min/Max): {body_battery_combined}")
 logging.info(f"  Sleep Score: {sleep_score}")
-logging.info(f"  Bedtime: {bed_time}")
-logging.info(f"  Wake Time: {wake_time}")
+logging.info(f"  Bedtime: {bed_time or 'N/A'}")
+logging.info(f"  Wake Time: {wake_time or 'N/A'}")
 logging.info(f"  Training Readiness: {training_readiness}")
 logging.info(f"  Training Status: {training_status_val}")
 logging.info(f"  Resting HR: {resting_hr}")
@@ -180,7 +181,6 @@ logging.info(f"  Calories: {calories}")
 # ---------------------------
 # PUSH TO NOTION
 # ---------------------------
-
 health_props = {
     "Name": notion_title(yesterday_str),
     "Date": notion_date(yesterday),
@@ -197,7 +197,6 @@ health_props = {
     "Calories Burned": notion_number(calories),
 }
 
-# --- Debug logging of what is sent to Notion ---
 logging.info("📤 Pushing the following properties to Notion:")
 pprint.pprint(health_props)
 
