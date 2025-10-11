@@ -33,6 +33,14 @@ garmin.login()
 def notion_date(dt):
     if not dt:
         return {"date": None}
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.fromisoformat(dt)
+        except ValueError:
+            try:
+                dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
+            except Exception:
+                return {"date": None}
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
@@ -46,6 +54,8 @@ def notion_select(value):
     return {"select": {"name": str(value)}}
 
 def notion_title(value):
+    if not value:
+        return {"title": []}
     return {"title": [{"text": {"content": str(value)}}]}
 
 def safe_fetch(func, *args):
@@ -56,7 +66,6 @@ def safe_fetch(func, *args):
         return None
 
 def extract_value(data, keys):
-    """Recursive extraction from dict/list."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -80,7 +89,6 @@ def extract_value(data, keys):
     return None
 
 def convert_gmt_to_local(ts):
-    """Convert Garmin GMT timestamp (ms) to local datetime."""
     if not ts:
         return None
     return datetime.datetime.fromtimestamp(ts / 1000)
@@ -126,7 +134,7 @@ sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall
 bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
 wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-# --- Body Battery Min/Max combined ---
+# --- Body Battery combined ---
 body_battery_min = None
 body_battery_max = None
 body_battery_combined = None
@@ -150,19 +158,10 @@ if body_comp.get("dateWeightList"):
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
 
 # --- Training Status ---
-training_status_map = {
-    2: "Maintaining",
-    3: "Recovery",
-    4: "Productive",
-    5: "Peaking",
-}
-
+training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-# numeric mapping if possible
 if isinstance(training_status_val, (int, float)):
     training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
-
-# Force Recovery if feedback indicates
 feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
 if feedback_hint and "RECOVERING" in str(feedback_hint).upper():
     training_status_val = "Recovery"
@@ -176,9 +175,9 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 # ---------------------------
 # DEBUG PARSED METRICS
 # ---------------------------
-logging.info("🧠 Garmin health metrics summary after parsing:")
+logging.info("🧠 Garmin health metrics summary:")
 logging.info(f"  Steps: {steps_total}")
-logging.info(f"  Body Weight (lbs): {body_weight}")
+logging.info(f"  Body Weight: {body_weight}")
 logging.info(f"  Body Battery: {body_battery_combined}")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
@@ -187,7 +186,7 @@ logging.info(f"  Training Readiness: {training_readiness}")
 logging.info(f"  Training Status: {training_status_val}")
 logging.info(f"  Resting HR: {resting_hr}")
 logging.info(f"  Stress: {stress}")
-logging.info(f"  Calories Burned: {calories}")
+logging.info(f"  Calories: {calories}")
 
 # ---------------------------
 # PUSH TO NOTION
@@ -217,7 +216,7 @@ def clean_notion_props(props):
     return cleaned
 
 health_props_cleaned = clean_notion_props(health_props)
-logging.info("📤 Properties to push to Notion (cleaned):")
+logging.info("📤 Properties to push to Notion:")
 pprint.pprint(health_props_cleaned)
 
 if health_props_cleaned:
@@ -230,7 +229,7 @@ else:
     logging.warning("⚠️ No valid properties to push to Notion. Skipping page creation.")
 
 # ---------------------------
-# PUSH ACTIVITIES (unchanged)
+# PUSH ACTIVITIES
 # ---------------------------
 logging.info(f"📤 Syncing {len(activities)} activities...")
 for act in activities:
