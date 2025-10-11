@@ -39,6 +39,18 @@ logging.basicConfig(
 # ---------------------------
 notion = Client(auth=NOTION_TOKEN)
 garmin = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
+garmin.login()
+
+# ---------------------------
+# DEBUG: Check Notion DB property schema
+# ---------------------------
+try:
+    print("🔍 DEBUG: Health DB properties:")
+    db = notion.databases.retrieve(NOTION_HEALTH_DB_ID)
+    for key, val in db["properties"].items():
+        print(f"  - {key} ({val['type']})")
+except Exception as e:
+    print("⚠️ Could not retrieve Notion DB schema:", e)
 
 # ---------------------------
 # HELPERS
