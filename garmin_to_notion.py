@@ -126,20 +126,16 @@ sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
 wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
-# --- Body Battery ---
-body_battery_value = None
-body_battery_text = None
+# --- Body Battery (Min / Max) ---
+body_battery_min = None
+body_battery_max = None
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
-    # Try latest numeric battery value
-    arr = bb.get("bodyBatteryValuesArray")
-    if arr and len(arr) > 0 and isinstance(arr[-1], list):
-        body_battery_value = arr[-1][1]
-    # Get descriptive label
-    body_battery_text = extract_value(bb, ["bodyBatteryLevel"])
-else:
-    body_battery_value = extract_value(body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "value"])
-    body_battery_text = extract_value(body_battery, ["bodyBatteryLevel"])
+    arr = bb.get("bodyBatteryValuesArray") or []
+    values = [v[1] for v in arr if isinstance(v, list) and len(v) > 1]
+    if values:
+        body_battery_min = min(values)
+        body_battery_max = max(values)
 
 # --- Body Weight ---
 body_weight = None
@@ -151,24 +147,20 @@ if body_comp.get("dateWeightList"):
 # --- Training Readiness ---
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
 
-# --- Training Status ---
-training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-status_map = {
-    0: "No Status",
-    1: "Detraining",
+# --- Training Status (map to Notion options) ---
+training_status_map = {
     2: "Maintaining",
     3: "Recovery",
     4: "Productive",
     5: "Peaking",
-    6: "Overreaching",
-    7: "Unknown"
 }
+training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
 if isinstance(training_status_val, (int, float)):
-    training_status_val = status_map.get(int(training_status_val), "Unknown")
+    training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
 
-# Try to detect “Recovery” from Garmin feedback text
+# Override if body battery feedback indicates recovery
 feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
-if feedback_hint and "RECOVERING" in feedback_hint.upper():
+if feedback_hint and "RECOVERING" in str(feedback_hint).upper():
     training_status_val = "Recovery"
 
 # --- Stress / HR / Calories / Steps ---
@@ -183,7 +175,8 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight (lbs): {body_weight}")
-logging.info(f"  Body Battery: {body_battery_value} ({body_battery_text})")
+logging.info(f"  Body Battery Min: {body_battery_min}")
+logging.info(f"  Body Battery Max: {body_battery_max}")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
 logging.info(f"  Wake Time: {wake_time}")
@@ -201,7 +194,8 @@ health_props = {
     "Date": notion_date(yesterday_str),
     "Steps": notion_number(steps_total),
     "Body Weight": notion_number(body_weight),
-    "Body Battery": notion_number(body_battery_value),
+    "Body Battery Min": notion_number(body_battery_min),
+    "Body Battery Max": notion_number(body_battery_max),
     "Sleep Score": notion_number(sleep_score),
     "Bedtime": notion_date(bed_time),
     "Wake Time": notion_date(wake_time),
