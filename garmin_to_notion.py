@@ -33,19 +33,12 @@ garmin.login()
 def notion_date(dt):
     if not dt:
         return {"date": None}
-    if isinstance(dt, (int, float)):
-        dt = datetime.datetime.fromtimestamp(dt / 1000)
-    if isinstance(dt, datetime.datetime):
-        dt = dt.isoformat()
-    return {"date": {"start": str(dt)}}
+    return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
     if value is None:
         return {"number": None}
-    try:
-        return {"number": float(value)}
-    except Exception:
-        return {"number": None}
+    return {"number": float(value)}
 
 def notion_select(value):
     if not value:
@@ -63,6 +56,7 @@ def safe_fetch(func, *args):
         return None
 
 def extract_value(data, keys):
+    """Recursive extraction from dict/list."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -85,6 +79,12 @@ def extract_value(data, keys):
                 return nested
     return None
 
+def convert_gmt_to_local(ts):
+    """Convert Garmin GMT timestamp (ms) to local datetime."""
+    if not ts:
+        return None
+    return datetime.datetime.fromtimestamp(ts / 1000)
+
 # ---------------------------
 # DATE SETUP
 # ---------------------------
@@ -102,8 +102,8 @@ sleep_data = safe_fetch(garmin.get_sleep_data, yesterday_str) or {}
 body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str) or []
 body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
 readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
-status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
-stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or []
+status = safe_fetch(garmin.get_training_status, yesterday_str) or []
+stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
 # DEBUG RAW GARMIN DATA
@@ -123,12 +123,13 @@ pprint.pprint(status)
 # --- Sleep ---
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"])
-bed_time = sleep_daily.get("sleepStartTimestampGMT")
-wake_time = sleep_daily.get("sleepEndTimestampGMT")
+bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
+wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-# --- Body Battery (Min / Max) ---
+# --- Body Battery Min/Max combined ---
 body_battery_min = None
 body_battery_max = None
+body_battery_combined = None
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
     arr = bb.get("bodyBatteryValuesArray") or []
@@ -136,6 +137,7 @@ if isinstance(body_battery, list) and len(body_battery) > 0:
     if values:
         body_battery_min = min(values)
         body_battery_max = max(values)
+        body_battery_combined = f"{body_battery_min} / {body_battery_max}"
 
 # --- Body Weight ---
 body_weight = None
@@ -154,11 +156,13 @@ training_status_map = {
     4: "Productive",
     5: "Peaking",
 }
+
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
+# numeric mapping if possible
 if isinstance(training_status_val, (int, float)):
     training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
 
-# Override if body battery feedback indicates recovery
+# Force Recovery if feedback indicates
 feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
 if feedback_hint and "RECOVERING" in str(feedback_hint).upper():
     training_status_val = "Recovery"
@@ -175,8 +179,7 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight (lbs): {body_weight}")
-logging.info(f"  Body Battery Min: {body_battery_min}")
-logging.info(f"  Body Battery Max: {body_battery_max}")
+logging.info(f"  Body Battery: {body_battery_combined}")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
 logging.info(f"  Wake Time: {wake_time}")
@@ -187,15 +190,14 @@ logging.info(f"  Stress: {stress}")
 logging.info(f"  Calories Burned: {calories}")
 
 # ---------------------------
-# PUSH TO NOTION (CLEANED)
+# PUSH TO NOTION
 # ---------------------------
 health_props = {
     "Name": notion_title(yesterday_str),
-    "Date": notion_date(yesterday_str),
+    "Date": notion_date(yesterday),
     "Steps": notion_number(steps_total),
     "Body Weight": notion_number(body_weight),
-    "Body Battery Min": notion_number(body_battery_min),
-    "Body Battery Max": notion_number(body_battery_max),
+    "Body Battery": notion_title(body_battery_combined),
     "Sleep Score": notion_number(sleep_score),
     "Bedtime": notion_date(bed_time),
     "Wake Time": notion_date(wake_time),
@@ -206,21 +208,18 @@ health_props = {
     "Calories Burned": notion_number(calories),
 }
 
-# Clean out any invalid / None properties
 def clean_notion_props(props):
     cleaned = {}
     for k, v in props.items():
-        if not v or v == {"number": None} or v == {"date": None} or v == {"select": None}:
+        if not v or v == {"number": None} or v == {"date": None} or v == {"select": None} or v == {"title": []}:
             continue
         cleaned[k] = v
     return cleaned
 
 health_props_cleaned = clean_notion_props(health_props)
-
 logging.info("📤 Properties to push to Notion (cleaned):")
 pprint.pprint(health_props_cleaned)
 
-# Only push if we have at least one valid property
 if health_props_cleaned:
     try:
         notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props_cleaned)
@@ -231,7 +230,7 @@ else:
     logging.warning("⚠️ No valid properties to push to Notion. Skipping page creation.")
 
 # ---------------------------
-# PUSH ACTIVITIES
+# PUSH ACTIVITIES (unchanged)
 # ---------------------------
 logging.info(f"📤 Syncing {len(activities)} activities...")
 for act in activities:
