@@ -33,33 +33,19 @@ garmin.login()
 def notion_date(dt):
     if not dt:
         return {"date": None}
-    # dt may be:
-    # - ISO string -> return as-is
-    # - integer ms since epoch -> convert
-    # - datetime -> iso
-    try:
-        if isinstance(dt, str):
-            # try to parse ISO-like strings; Notion accepts ISO strings
-            return {"date": {"start": dt}}
-        if isinstance(dt, (int, float)):
-            # milliseconds -> seconds
-            dt_obj = datetime.datetime.fromtimestamp(float(dt) / 1000)
-            return {"date": {"start": dt_obj.isoformat()}}
-        if isinstance(dt, datetime.datetime):
-            return {"date": {"start": dt.isoformat()}}
-    except Exception:
-        pass
-    return {"date": None}
+    if isinstance(dt, (int, float)):
+        dt = datetime.datetime.fromtimestamp(dt / 1000)
+    if isinstance(dt, datetime.datetime):
+        dt = dt.isoformat()
+    return {"date": {"start": str(dt)}}
 
 def notion_number(value):
     if value is None:
         return {"number": None}
-    if isinstance(value, (int, float, str)):
-        try:
-            return {"number": float(value)}
-        except Exception:
-            return {"number": None}
-    return {"number": None}
+    try:
+        return {"number": float(value)}
+    except Exception:
+        return {"number": None}
 
 def notion_select(value):
     if not value:
@@ -73,24 +59,21 @@ def safe_fetch(func, *args):
     try:
         return func(*args)
     except Exception as e:
-        logging.debug(f"⚠️ {func.__name__} unavailable: {e}")
+        logging.warning(f"⚠️ {func.__name__} unavailable: {e}")
         return None
 
 def extract_value(data, keys):
-    """Recursively search for first occurrence of any of keys (strings)."""
-    if data is None:
+    if not data:
         return None
     if isinstance(data, dict):
-        for k in keys:
-            if k in data:
-                v = data[k]
-                if isinstance(v, (int, float, str)):
-                    return v
-                # if nested, continue searching inside it
-                nested = extract_value(v, keys)
+        for key in keys:
+            if key in data:
+                val = data[key]
+                if isinstance(val, (int, float, str)):
+                    return val
+                nested = extract_value(val, keys)
                 if nested is not None:
                     return nested
-        # dive deeper through values
         for v in data.values():
             nested = extract_value(v, keys)
             if nested is not None:
@@ -111,7 +94,7 @@ yesterday_str = yesterday.isoformat()
 logging.info(f"📅 Collecting Garmin data for {yesterday_str}")
 
 # ---------------------------
-# FETCH GARMIN DATA (primary endpoints)
+# FETCH GARMIN DATA
 # ---------------------------
 activities = safe_fetch(garmin.get_activities, 0, 10) or []
 steps = safe_fetch(garmin.get_daily_steps, yesterday_str, yesterday_str) or []
@@ -123,100 +106,53 @@ status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
 stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
-# Attempt wellness fallback endpoints (some accounts expose different names)
+# DEBUG RAW GARMIN DATA
 # ---------------------------
-wellness = None
-for method_name in ("get_wellness", "get_wellness_data", "get_daily_wellness"):
-    wellness = safe_fetch(getattr(garmin, method_name, lambda *a, **k: None), yesterday_str)
-    if wellness:
-        break
-
-# ---------------------------
-# RAW DEBUG DUMPS (paste these blocks if things still fail)
-# ---------------------------
-logging.info("\n🔍 Raw Garmin debug blocks (copy these if we still need tweaks):\n")
+logging.info("🔍 Raw Garmin data snapshot:")
 logging.info("Body Battery:")
 pprint.pprint(body_battery)
-logging.info("\nSleep Data:")
+logging.info("Sleep Data:")
 pprint.pprint(sleep_data)
-logging.info("\nTraining Status:")
+logging.info("Training Status:")
 pprint.pprint(status)
-logging.info("\nWellness (fallback):")
-pprint.pprint(wellness)
-logging.info("\nStats & Body:")
-pprint.pprint(stats)
-logging.info("\nReadiness:")
-pprint.pprint(readiness)
 
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
-# Sleep (try multiple shapes)
-sleep_daily = sleep_data.get("dailySleepDTO", {}) if isinstance(sleep_data, dict) else {}
-sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "score", "unknown_0"])
-# fallback: check top-level sleep_data for any score-like key
-if not sleep_score:
-    sleep_score = extract_value(sleep_data, ["sleepScore", "overallScore", "overall", "score"])
 
-# Bed/wake: prefer ISO strings if present; else handle epoch ms ints
-def parse_possible_ts(val):
-    if val is None:
-        return None
-    if isinstance(val, str):
-        return val
-    if isinstance(val, (int, float)):
-        # treat as ms
-        try:
-            return datetime.datetime.fromtimestamp(float(val) / 1000).isoformat()
-        except Exception:
-            return None
-    return None
+# --- Sleep ---
+sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
+sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"])
+bed_time = sleep_daily.get("sleepStartTimestampGMT")
+wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
-bed_time = parse_possible_ts(sleep_daily.get("sleepStartTimestampGMT") or sleep_daily.get("sleepStartTimestampLocal") or sleep_daily.get("startTimestampGMT") or sleep_daily.get("startTimestampLocal"))
-wake_time = parse_possible_ts(sleep_daily.get("sleepEndTimestampGMT") or sleep_daily.get("sleepEndTimestampLocal") or sleep_daily.get("endTimestampGMT") or sleep_daily.get("endTimestampLocal"))
-
-# Body battery: numeric series + textual labels
+# --- Body Battery ---
 body_battery_value = None
-body_battery_high = None
-body_battery_low = None
 body_battery_text = None
 if isinstance(body_battery, list) and len(body_battery) > 0:
-    first_bb = body_battery[0]
-    # numeric series under bodyBatteryValuesArray (list of [ts, val])
-    arr = first_bb.get("bodyBatteryValuesArray") or first_bb.get("bodyBatteryValues") or []
-    try:
-        numeric_vals = [int(item[1]) for item in arr if isinstance(item, (list, tuple)) and len(item) >= 2]
-        if numeric_vals:
-            body_battery_value = numeric_vals[-1]   # last (most recent)
-            body_battery_high = max(numeric_vals)
-            body_battery_low = min(numeric_vals)
-    except Exception:
-        pass
-    # textual labels
-    body_battery_text = extract_value(first_bb, ["bodyBatteryLevel", "bodyBatteryDynamicFeedbackEvent", "endOfDayBodyBatteryDynamicFeedbackEvent"])
-    # also try to extract specific fields if present
-    if not body_battery_text:
-        body_battery_text = extract_value(first_bb, ["feedbackShortType", "feedbackLongType"])
+    bb = body_battery[0]
+    # Try latest numeric battery value
+    arr = bb.get("bodyBatteryValuesArray")
+    if arr and len(arr) > 0 and isinstance(arr[-1], list):
+        body_battery_value = arr[-1][1]
+    # Get descriptive label
+    body_battery_text = extract_value(bb, ["bodyBatteryLevel"])
 else:
-    # if not list, try to extract directly
-    body_battery_value = extract_value(body_battery, ["bodyBatteryValue", "value", "unknown_0"])
+    body_battery_value = extract_value(body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "value"])
     body_battery_text = extract_value(body_battery, ["bodyBatteryLevel"])
 
-# Body weight
+# --- Body Weight ---
 body_weight = None
-if isinstance(body_comp, dict) and body_comp.get("dateWeightList"):
+if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
-        try:
-            body_weight = round(float(w_raw) / 453.592, 2)
-        except Exception:
-            body_weight = None
+        body_weight = round(float(w_raw) / 453.592, 2)
 
-# Training readiness & status
+# --- Training Readiness ---
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
 
-training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus", "display"])
-# If numeric code, map to friendly name (fallback mapping)
+# --- Training Status ---
+training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
 status_map = {
     0: "No Status",
     1: "Detraining",
@@ -227,47 +163,27 @@ status_map = {
     6: "Overreaching",
     7: "Unknown"
 }
-try:
-    if isinstance(training_status_val, (int, float, str)) and str(training_status_val).isdigit():
-        training_status_val = status_map.get(int(str(training_status_val)), training_status_val)
-except Exception:
-    pass
+if isinstance(training_status_val, (int, float)):
+    training_status_val = status_map.get(int(training_status_val), "Unknown")
 
-# Override heuristics: use endOfDay feedback hint if it contains RECOVER
-try:
-    fb1 = None
-    if isinstance(body_battery, list) and body_battery:
-        fb1 = (body_battery[0].get("endOfDayBodyBatteryDynamicFeedbackEvent") or {}).get("feedbackShortType") or (body_battery[0].get("bodyBatteryDynamicFeedbackEvent") or {}).get("feedbackShortType")
-    fb2 = extract_value(body_battery, ["feedbackShortType", "feedbackLongType", "feedbackShort"])
-    for fb in (fb1, fb2):
-        if fb and isinstance(fb, str) and "RECOVER" in fb.upper():
-            training_status_val = "Recovery"
-            break
-except Exception:
-    pass
+# Try to detect “Recovery” from Garmin feedback text
+feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
+if feedback_hint and "RECOVERING" in feedback_hint.upper():
+    training_status_val = "Recovery"
 
-# Stress: try stats -> wellness fallback objects
+# --- Stress / HR / Calories / Steps ---
 stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
-if stress is None and wellness:
-    stress = extract_value(wellness, ["stress_level_value", "stressLevel", "stress_score", "unknown_0"])
-
-# HR / calories / steps
-resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate", "resting_hr"])
-calories = extract_value(stats, ["totalKilocalories", "active_calories", "calories"])
-steps_total = 0
-if isinstance(steps, list):
-    steps_total = sum(i.get("totalSteps", 0) for i in steps)
+resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"])
+calories = extract_value(stats, ["totalKilocalories", "active_calories"])
+steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
 # ---------------------------
 # DEBUG PARSED METRICS
 # ---------------------------
-logging.info("\n🧠 Garmin parsed metrics (what we'll push):")
+logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight (lbs): {body_weight}")
-logging.info(f"  Body Battery (last): {body_battery_value}")
-logging.info(f"  Body Battery High: {body_battery_high}")
-logging.info(f"  Body Battery Low: {body_battery_low}")
-logging.info(f"  Body Battery Text: {body_battery_text}")
+logging.info(f"  Body Battery: {body_battery_value} ({body_battery_text})")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
 logging.info(f"  Wake Time: {wake_time}")
@@ -278,17 +194,14 @@ logging.info(f"  Stress: {stress}")
 logging.info(f"  Calories Burned: {calories}")
 
 # ---------------------------
-# BUILD NOTION PAYLOAD
+# PUSH TO NOTION
 # ---------------------------
 health_props = {
     "Name": notion_title(yesterday_str),
-    "Date": notion_date(bed_time or yesterday_str),
+    "Date": notion_date(yesterday_str),
     "Steps": notion_number(steps_total),
     "Body Weight": notion_number(body_weight),
     "Body Battery": notion_number(body_battery_value),
-    "Body Battery High": notion_number(body_battery_high),
-    "Body Battery Low": notion_number(body_battery_low),
-    "Body Battery Level": notion_select(body_battery_text),
     "Sleep Score": notion_number(sleep_score),
     "Bedtime": notion_date(bed_time),
     "Wake Time": notion_date(wake_time),
@@ -299,7 +212,7 @@ health_props = {
     "Calories Burned": notion_number(calories),
 }
 
-logging.info("\n📤 Pushing Garmin health metrics to Notion...")
+logging.info("📤 Pushing Garmin health metrics to Notion...")
 try:
     notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
     logging.info(f"✅ Synced health metrics for {yesterday_str}")
@@ -307,9 +220,9 @@ except Exception as e:
     logging.error(f"⚠️ Failed to push health metrics: {e}")
 
 # ---------------------------
-# Activities (unchanged)
+# PUSH ACTIVITIES
 # ---------------------------
-logging.info(f"\n📤 Syncing {len(activities)} activities...")
+logging.info(f"📤 Syncing {len(activities)} activities...")
 for act in activities:
     act_date = act.get("startTimeLocal", "")[:10] or yesterday_str
     activity_props = {
@@ -327,4 +240,4 @@ for act in activities:
         logging.error(f"⚠️ Failed to log activity {act.get('activityName')}: {e}")
 
 garmin.logout()
-logging.info("\n🏁 Sync complete.")
+logging.info("🏁 Sync complete.")
