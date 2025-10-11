@@ -42,12 +42,10 @@ def notion_date(dt):
 def notion_number(value):
     if value is None:
         return {"number": None}
-    if isinstance(value, (int, float, str)):
-        try:
-            return {"number": float(value)}
-        except Exception:
-            return {"number": None}
-    return {"number": None}
+    try:
+        return {"number": float(value)}
+    except Exception:
+        return {"number": None}
 
 def notion_select(value):
     if not value:
@@ -65,7 +63,6 @@ def safe_fetch(func, *args):
         return None
 
 def extract_value(data, keys):
-    """Recursively find a matching key anywhere in a dict/list."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -122,30 +119,29 @@ pprint.pprint(status)
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
+
+# --- Sleep ---
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-
-# --- Sleep Score ---
-sleep_score = extract_value(
-    sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"]
-)
-if not sleep_score and isinstance(sleep_data, dict):
-    sleep_score = extract_value(sleep_data, ["sleepScore", "overall", "unknown_0", "score"])
-
+sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"])
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
 wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
 # --- Body Battery ---
-body_battery_value = extract_value(
-    body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "value", "unknown_0", "unknown_1"]
-)
-if not body_battery_value and isinstance(body_battery, list):
-    for item in body_battery:
-        v = extract_value(item, ["bodyBatteryValue", "value", "unknown_0"])
-        if v is not None:
-            body_battery_value = v
-            break
+body_battery_value = None
+body_battery_text = None
+if isinstance(body_battery, list) and len(body_battery) > 0:
+    bb = body_battery[0]
+    # Try latest numeric battery value
+    arr = bb.get("bodyBatteryValuesArray")
+    if arr and len(arr) > 0 and isinstance(arr[-1], list):
+        body_battery_value = arr[-1][1]
+    # Get descriptive label
+    body_battery_text = extract_value(bb, ["bodyBatteryLevel"])
+else:
+    body_battery_value = extract_value(body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "value"])
+    body_battery_text = extract_value(body_battery, ["bodyBatteryLevel"])
 
-# --- Body Weight (grams → lbs) ---
+# --- Body Weight ---
 body_weight = None
 if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
@@ -167,18 +163,16 @@ status_map = {
     6: "Overreaching",
     7: "Unknown"
 }
-try:
-    if isinstance(training_status_val, (int, float)):
-        training_status_val = status_map.get(int(training_status_val), "Unknown")
-except Exception:
-    pass
-if not training_status_val:
-    training_status_val = extract_value(status, ["display", "current", "description"]) or "Unknown"
+if isinstance(training_status_val, (int, float)):
+    training_status_val = status_map.get(int(training_status_val), "Unknown")
 
-# --- Stress / Heart Rate / Calories / Steps ---
-stress = extract_value(
-    stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"]
-)
+# Try to detect “Recovery” from Garmin feedback text
+feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"])
+if feedback_hint and "RECOVERING" in feedback_hint.upper():
+    training_status_val = "Recovery"
+
+# --- Stress / HR / Calories / Steps ---
+stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
 resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"])
 calories = extract_value(stats, ["totalKilocalories", "active_calories"])
 steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
@@ -189,7 +183,7 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight (lbs): {body_weight}")
-logging.info(f"  Body Battery: {body_battery_value}")
+logging.info(f"  Body Battery: {body_battery_value} ({body_battery_text})")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
 logging.info(f"  Wake Time: {wake_time}")
@@ -200,7 +194,7 @@ logging.info(f"  Stress: {stress}")
 logging.info(f"  Calories Burned: {calories}")
 
 # ---------------------------
-# PUSH HEALTH METRICS TO NOTION
+# PUSH TO NOTION
 # ---------------------------
 health_props = {
     "Name": notion_title(yesterday_str),
@@ -226,10 +220,9 @@ except Exception as e:
     logging.error(f"⚠️ Failed to push health metrics: {e}")
 
 # ---------------------------
-# PUSH ACTIVITIES TO NOTION
+# PUSH ACTIVITIES
 # ---------------------------
 logging.info(f"📤 Syncing {len(activities)} activities...")
-
 for act in activities:
     act_date = act.get("startTimeLocal", "")[:10] or yesterday_str
     activity_props = {
