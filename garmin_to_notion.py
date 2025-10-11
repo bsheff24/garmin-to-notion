@@ -1,6 +1,7 @@
 import os
 import datetime
 import logging
+import pprint
 from garminconnect import Garmin
 from notion_client import Client
 
@@ -64,7 +65,6 @@ def safe_fetch(func, *args):
         return None
 
 def extract_numeric(data, keys):
-    """Recursively extract the first numeric value from dict/list given possible keys."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -86,7 +86,6 @@ def extract_numeric(data, keys):
     return None
 
 def extract_string(data, keys):
-    """Recursively extract the first string value from dict/list given possible keys."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -128,6 +127,19 @@ status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
 stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
+# DEBUG: dump raw Garmin responses
+# ---------------------------
+logging.info("🔍 Raw Garmin data debug dump:")
+logging.info("Body Battery:")
+pprint.pprint(body_battery)
+logging.info("Sleep Data:")
+pprint.pprint(sleep_data)
+logging.info("Stats Data:")
+pprint.pprint(stats)
+logging.info("Training Status:")
+pprint.pprint(status)
+
+# ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
@@ -144,7 +156,13 @@ if body_comp.get("dateWeightList"):
         body_weight = round(float(w_raw) / 453.592, 2)  # grams → lbs
 
 training_readiness = extract_numeric(readiness, ["score"])
-training_status_val = extract_string(status, ["trainingStatus", "status"]) or "UNKNOWN"
+
+# NEW: robust Training Status extraction
+training_status_val = extract_string(status, ["trainingStatus", "status"])
+if not training_status_val and isinstance(status, dict) and "summary" in status:
+    training_status_val = extract_string(status["summary"], ["trainingStatus", "status"])
+if not training_status_val:
+    training_status_val = "UNKNOWN"
 
 resting_hr = extract_numeric(stats, ["restingHeartRate"])
 stress = extract_numeric(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel"])
@@ -155,7 +173,7 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 # ---------------------------
 # DEBUG HEALTH METRICS
 # ---------------------------
-logging.info("🧠 Garmin health metrics summary:")
+logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight (lbs): {body_weight}")
 logging.info(f"  Body Battery: {body_battery_value}")
