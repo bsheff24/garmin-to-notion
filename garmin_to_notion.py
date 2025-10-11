@@ -64,6 +64,23 @@ def safe_fetch(func, *args):
         logging.warning(f"⚠️ {func.__name__} unavailable: {e}")
         return None
 
+import pprint
+
+logging.info("🔍 RAW Garmin Data Snapshots for Debugging")
+
+logging.info("=== sleep_daily ===")
+pprint.pprint(sleep_data.get("dailySleepDTO", {}))
+
+logging.info("=== body_battery ===")
+pprint.pprint(body_battery)
+
+logging.info("=== readiness ===")
+pprint.pprint(readiness)
+
+logging.info("=== stats ===")
+pprint.pprint(stats)
+
+
 def extract_value(data, keys):
     if not data:
         return None
