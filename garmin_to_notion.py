@@ -65,7 +65,7 @@ def safe_fetch(func, *args):
         return None
 
 def extract_value(data, keys):
-    """Traverse nested Garmin data for any matching key."""
+    """Recursively find a matching key anywhere in a dict/list."""
     if not data:
         return None
     if isinstance(data, dict):
@@ -74,11 +74,9 @@ def extract_value(data, keys):
                 val = data[key]
                 if isinstance(val, (int, float, str)):
                     return val
-                if isinstance(val, (dict, list)):
-                    nested = extract_value(val, keys)
-                    if nested is not None:
-                        return nested
-        # Dive deeper
+                nested = extract_value(val, keys)
+                if nested is not None:
+                    return nested
         for v in data.values():
             nested = extract_value(v, keys)
             if nested is not None:
@@ -111,15 +109,13 @@ status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
 stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
-# DEBUG RAW DATA
+# DEBUG RAW GARMIN DATA
 # ---------------------------
-logging.info("🔍 Raw Garmin data debug dump:")
+logging.info("🔍 Raw Garmin data snapshot:")
 logging.info("Body Battery:")
 pprint.pprint(body_battery)
 logging.info("Sleep Data:")
 pprint.pprint(sleep_data)
-logging.info("Stats Data:")
-pprint.pprint(stats)
 logging.info("Training Status:")
 pprint.pprint(status)
 
@@ -128,26 +124,39 @@ pprint.pprint(status)
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-# --- Sleep ---
-sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0"])
+# --- Sleep Score ---
+sleep_score = extract_value(
+    sleep_daily, ["sleepScore", "overallScore", "overall", "unknown_0", "score"]
+)
+if not sleep_score and isinstance(sleep_data, dict):
+    sleep_score = extract_value(sleep_data, ["sleepScore", "overall", "unknown_0", "score"])
+
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
 wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
 # --- Body Battery ---
-# Using unknown_0 fallback discovered in exported data
-body_battery_value = extract_value(body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "unknown_0", "value"])
+body_battery_value = extract_value(
+    body_battery, ["bodyBatteryValue", "bodyBatteryLevel", "value", "unknown_0", "unknown_1"]
+)
+if not body_battery_value and isinstance(body_battery, list):
+    for item in body_battery:
+        v = extract_value(item, ["bodyBatteryValue", "value", "unknown_0"])
+        if v is not None:
+            body_battery_value = v
+            break
 
-# --- Body Weight ---
+# --- Body Weight (grams → lbs) ---
 body_weight = None
 if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
-        body_weight = round(float(w_raw) / 453.592, 2)  # grams → lbs
+        body_weight = round(float(w_raw) / 453.592, 2)
 
-# --- Training Readiness & Status ---
+# --- Training Readiness ---
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"])
 
-training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2"])
+# --- Training Status ---
+training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
 status_map = {
     0: "No Status",
     1: "Detraining",
@@ -164,18 +173,18 @@ try:
 except Exception:
     pass
 if not training_status_val:
-    training_status_val = "Unknown"
+    training_status_val = extract_value(status, ["display", "current", "description"]) or "Unknown"
 
-# --- Stress ---
-stress = extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
-
-# --- Heart Rate / Calories / Steps ---
+# --- Stress / Heart Rate / Calories / Steps ---
+stress = extract_value(
+    stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"]
+)
 resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"])
 calories = extract_value(stats, ["totalKilocalories", "active_calories"])
 steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
 # ---------------------------
-# DEBUG HEALTH METRICS
+# DEBUG PARSED METRICS
 # ---------------------------
 logging.info("🧠 Garmin health metrics summary after parsing:")
 logging.info(f"  Steps: {steps_total}")
