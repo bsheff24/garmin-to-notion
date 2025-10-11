@@ -143,11 +143,17 @@ pprint.pprint(status)
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-sleep_score = extract_numeric(sleep_daily, ["sleepScore", "overall", "overallScore"])
+
+# Fallback keys for sleep score
+sleep_score_keys = ["sleepScore", "overall", "overallScore"]
+sleep_score = extract_numeric(sleep_daily, sleep_score_keys)
+
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
 wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
-body_battery_value = extract_numeric(body_battery, ["bodyBatteryValue", "value", "bodyBatteryHighestValue"])
+# Fallback keys for body battery
+body_battery_keys = ["bodyBatteryValue", "value", "bodyBatteryHighestValue"]
+body_battery_value = extract_numeric(body_battery, body_battery_keys)
 
 body_weight = None
 if body_comp.get("dateWeightList"):
@@ -157,15 +163,18 @@ if body_comp.get("dateWeightList"):
 
 training_readiness = extract_numeric(readiness, ["score"])
 
-# NEW: robust Training Status extraction
+# Robust Training Status extraction
 training_status_val = extract_string(status, ["trainingStatus", "status"])
 if not training_status_val and isinstance(status, dict) and "summary" in status:
     training_status_val = extract_string(status["summary"], ["trainingStatus", "status"])
 if not training_status_val:
     training_status_val = "UNKNOWN"
 
+# Fallback keys for stress
+stress_keys = ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel"]
+stress = extract_numeric(stats, stress_keys)
+
 resting_hr = extract_numeric(stats, ["restingHeartRate"])
-stress = extract_numeric(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel"])
 calories = extract_numeric(stats, ["totalKilocalories"])
 
 steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
