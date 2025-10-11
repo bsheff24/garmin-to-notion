@@ -119,7 +119,7 @@ stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or []
 # ---------------------------
 # DEBUG RAW DATA
 # ---------------------------
-logging.info("🔍 RAW Garmin Data Snapshots for Debugging")
+logging.info("🔍 RAW Garmin Data Snapshots")
 logging.info("=== sleep_daily ===")
 pprint.pprint(sleep_data.get("dailySleepDTO", {}))
 logging.info("=== body_battery ===")
@@ -133,15 +133,19 @@ pprint.pprint(stats)
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
+
+# --- Sleep Score ---
 sleep_score = (
-    sleep_daily.get("sleepScore")
-    or sleep_daily.get("summary", {}).get("sleepScore")
-    or extract_value(sleep_daily, ["score", "overallScore"])
+    sleep_daily.get("sleepScoreFeedback")
+    or extract_value(sleep_daily, ["sleepScore", "score", "overallScore"])
     or 0
 )
+
+# --- Sleep times ---
 bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
 wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
+# --- Body Battery Min/Max ---
 body_battery_combined = "N/A"
 if isinstance(body_battery, list) and len(body_battery) > 0:
     bb = body_battery[0]
@@ -150,29 +154,35 @@ if isinstance(body_battery, list) and len(body_battery) > 0:
     if values:
         body_battery_combined = f"{min(values)} / {max(values)}"
 
+# --- Body Weight ---
 body_weight = None
 if body_comp.get("dateWeightList"):
     w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
         body_weight = round(float(w_raw) / 453.592, 2)
 
+# --- Training Readiness ---
 training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
+# --- Training Status ---
 training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
 training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
-readiness_hint = extract_value(readiness, ["trainingReadinessFeedback", "feedback"]) or ""
 
-if "RECOVERING" in str(feedback_hint).upper() or "RECOVERING" in str(readiness_hint).upper():
+feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
+readiness_feedback = ""
+if readiness and isinstance(readiness, list) and len(readiness) > 0:
+    readiness_feedback = readiness[0].get("trainingFeedback", "")
+
+if "RECOVERING" in str(feedback_hint).upper() or "RECOVERING" in str(readiness_feedback).upper():
     training_status_val = "Recovery"
 elif isinstance(training_status_val, (int, float)):
     training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
 else:
     training_status_val = "Maintaining"
 
+# --- Stress / HR / Calories / Steps ---
 stress = (
-    extract_value(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel", "stress_level_value"])
-    or extract_value(stats.get("stress", {}), ["stressLevel"])
+    extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"])
     or 0
 )
 resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
@@ -228,22 +238,3 @@ except Exception as e:
 # PUSH ACTIVITIES
 # ---------------------------
 logging.info(f"📤 Syncing {len(activities)} activities...")
-for act in activities:
-    act_date = act.get("startTimeLocal", "")[:10] or yesterday_str
-    activity_props = {
-        "Date": notion_date(act_date),
-        "Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
-        "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
-        "Calories": notion_number(act.get("calories")),
-        "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
-        "Type": notion_select(act.get("activityType", {}).get("typeKey")),
-    }
-    try:
-        notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
-        logging.info(f"🏃 Logged activity: {act.get('activityName')}")
-    except Exception as e:
-        logging.error(f"⚠️ Failed to log activity {act.get('activityName')}: {e}")
-
-garmin.logout()
-logging.info("🏁 Sync complete.")
-
