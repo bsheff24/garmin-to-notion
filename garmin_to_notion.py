@@ -41,13 +41,11 @@ def notion_date(dt):
 def notion_number(value):
     if value is None:
         return {"number": None}
-    # Only convert if it's int, float, or string
     if isinstance(value, (int, float, str)):
         try:
             return {"number": float(value)}
         except Exception:
             return {"number": None}
-    # If value is a dict or other type, return None
     return {"number": None}
 
 def notion_select(value):
@@ -65,11 +63,48 @@ def safe_fetch(func, *args):
         logging.warning(f"⚠️ {func.__name__} unavailable: {e}")
         return None
 
-def se(data, key):
+def extract_numeric(data, keys):
+    """Recursively extract the first numeric value from dict/list given possible keys."""
+    if not data:
+        return None
     if isinstance(data, dict):
-        return data.get(key)
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        return data[0].get(key)
+        for key in keys:
+            val = data.get(key)
+            if isinstance(val, (int, float)):
+                return val
+            if isinstance(val, (dict, list)):
+                nested = extract_numeric(val, keys)
+                if nested is not None:
+                    return nested
+    if isinstance(data, list):
+        for item in data:
+            nested = extract_numeric(item, keys)
+            if nested is not None:
+                return nested
+    if isinstance(data, (int, float)):
+        return data
+    return None
+
+def extract_string(data, keys):
+    """Recursively extract the first string value from dict/list given possible keys."""
+    if not data:
+        return None
+    if isinstance(data, dict):
+        for key in keys:
+            val = data.get(key)
+            if isinstance(val, str):
+                return val
+            if isinstance(val, (dict, list)):
+                nested = extract_string(val, keys)
+                if nested is not None:
+                    return nested
+    if isinstance(data, list):
+        for item in data:
+            nested = extract_string(item, keys)
+            if nested is not None:
+                return nested
+    if isinstance(data, str):
+        return data
     return None
 
 # ---------------------------
@@ -89,57 +124,33 @@ sleep_data = safe_fetch(garmin.get_sleep_data, yesterday_str) or {}
 body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str) or []
 body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
 readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
-status = safe_fetch(garmin.get_training_status, yesterday_str) or []
-stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or []
+status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
+stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
-sleep_score = (
-    se(sleep_daily, "sleepScore")
-    or se(sleep_daily.get("sleepScores") or {}, "overall")
-    or se(sleep_daily.get("sleepScores") or {}, "overallScore")
-)
-bed_time = se(sleep_daily, "sleepStartTimestampGMT")
-wake_time = se(sleep_daily, "sleepEndTimestampGMT")
+sleep_score = extract_numeric(sleep_daily, ["sleepScore", "overall", "overallScore"])
+bed_time = sleep_daily.get("sleepStartTimestampGMT")
+wake_time = sleep_daily.get("sleepEndTimestampGMT")
 
-body_battery_value = None
-if isinstance(body_battery, list) and body_battery:
-    last = body_battery[-1]
-    body_battery_value = (
-        se(last, "bodyBatteryValue")
-        or se(last, "bodyBatteryHighestValue")
-        or se(last, "bodyBatteryLowestValue")
-        or se(last, "value")
-        or se(last.get("values") or {}, "value")
-    )
+body_battery_value = extract_numeric(body_battery, ["bodyBatteryValue", "value", "bodyBatteryHighestValue"])
 
 body_weight = None
 if body_comp.get("dateWeightList"):
-    w_raw = se(body_comp["dateWeightList"][0], "weight")
+    w_raw = body_comp["dateWeightList"][0].get("weight")
     if w_raw:
         body_weight = round(float(w_raw) / 453.592, 2)  # grams → lbs
 
-training_readiness = se(readiness, "score")
-training_status_val = (
-    se(status, "trainingStatus")
-    or se(status.get("trainingStatus") or {}, "trainingStatus")
-    or se(status.get("trainingStatus") or {}, "status")
-)
+training_readiness = extract_numeric(readiness, ["score"])
+training_status_val = extract_string(status, ["trainingStatus", "status"]) or "UNKNOWN"
 
-resting_hr = se(stats, "restingHeartRate")
-stress = (
-    se(stats, "stressLevelAvg")
-    or se(stats, "stressScore")
-    or se(stats, "overallStressLevel")
-    or se(stats, "stressLevel")
-)
-calories = se(stats, "totalKilocalories")
+resting_hr = extract_numeric(stats, ["restingHeartRate"])
+stress = extract_numeric(stats, ["stressLevelAvg", "stressScore", "overallStressLevel", "stressLevel"])
+calories = extract_numeric(stats, ["totalKilocalories"])
 
-steps_total = 0
-if isinstance(steps, list) and steps:
-    steps_total = sum(i.get("totalSteps", 0) for i in steps)
+steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
 # ---------------------------
 # DEBUG HEALTH METRICS
