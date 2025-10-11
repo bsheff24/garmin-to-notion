@@ -114,17 +114,6 @@ status = safe_fetch(garmin.get_training_status, yesterday_str) or []
 stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
 
 # ---------------------------
-# DEBUG RAW GARMIN DATA
-# ---------------------------
-logging.info("🔍 Raw Garmin data snapshot:")
-logging.info("Body Battery:")
-pprint.pprint(body_battery)
-logging.info("Sleep Data:")
-pprint.pprint(sleep_data)
-logging.info("Training Status:")
-pprint.pprint(status)
-
-# ---------------------------
 # PARSE HEALTH METRICS
 # ---------------------------
 
@@ -134,7 +123,7 @@ sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore", "overall
 bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
 wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-# --- Body Battery combined ---
+# --- Body Battery Min/Max ---
 body_battery_min = None
 body_battery_max = None
 body_battery_combined = None
@@ -178,7 +167,7 @@ steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, li
 logging.info("🧠 Garmin health metrics summary:")
 logging.info(f"  Steps: {steps_total}")
 logging.info(f"  Body Weight: {body_weight}")
-logging.info(f"  Body Battery: {body_battery_combined}")
+logging.info(f"  Body Battery (Min/Max): {body_battery_combined}")
 logging.info(f"  Sleep Score: {sleep_score}")
 logging.info(f"  Bedtime: {bed_time}")
 logging.info(f"  Wake Time: {wake_time}")
@@ -191,6 +180,7 @@ logging.info(f"  Calories: {calories}")
 # ---------------------------
 # PUSH TO NOTION
 # ---------------------------
+
 health_props = {
     "Name": notion_title(yesterday_str),
     "Date": notion_date(yesterday),
@@ -207,26 +197,15 @@ health_props = {
     "Calories Burned": notion_number(calories),
 }
 
-def clean_notion_props(props):
-    cleaned = {}
-    for k, v in props.items():
-        if not v or v == {"number": None} or v == {"date": None} or v == {"select": None} or v == {"title": []}:
-            continue
-        cleaned[k] = v
-    return cleaned
+# --- Debug logging of what is sent to Notion ---
+logging.info("📤 Pushing the following properties to Notion:")
+pprint.pprint(health_props)
 
-health_props_cleaned = clean_notion_props(health_props)
-logging.info("📤 Properties to push to Notion:")
-pprint.pprint(health_props_cleaned)
-
-if health_props_cleaned:
-    try:
-        notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props_cleaned)
-        logging.info(f"✅ Synced health metrics for {yesterday_str}")
-    except Exception as e:
-        logging.error(f"⚠️ Failed to push health metrics: {e}")
-else:
-    logging.warning("⚠️ No valid properties to push to Notion. Skipping page creation.")
+try:
+    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
+    logging.info(f"✅ Synced health metrics for {yesterday_str}")
+except Exception as e:
+    logging.error(f"⚠️ Failed to push health metrics: {e}")
 
 # ---------------------------
 # PUSH ACTIVITIES
