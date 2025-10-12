@@ -12,6 +12,7 @@ GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
+NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
 
 # ---------------------------
 # LOGGING
@@ -47,19 +48,17 @@ training_status_data = garmin.get_training_status(yesterday_str) or {}
 stats_data = garmin.get_stats_and_body(yesterday_str) or {}
 
 # ---------------------------
-# PARSE HEALTH METRICS
+# PARSE HEALTH METRICS (UNCHANGED FROM LAST WORKING)
 # ---------------------------
-# --- Steps ---
 steps_total = sum(i.get("totalSteps", 0) for i in steps_data) if steps_data else 0
 
-# --- Body Weight ---
 body_weight = None
 if body_comp_data.get("dateWeightList"):
     w_raw = body_comp_data["dateWeightList"][0].get("weight")
     if w_raw:
         body_weight = round(float(w_raw) / 453.592, 2)
 
-# --- Body Battery Min/Max ---
+# Body Battery Min/Max
 bb_min, bb_max = None, None
 if isinstance(body_battery_data, list) and len(body_battery_data) > 0:
     bb = body_battery_data[0]
@@ -69,7 +68,7 @@ if isinstance(body_battery_data, list) and len(body_battery_data) > 0:
         bb_min = min(numbers)
         bb_max = max(numbers)
 
-# --- Sleep ---
+# Sleep
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore") or 0
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
@@ -77,11 +76,16 @@ wake_time = sleep_daily.get("sleepEndTimestampGMT")
 bed_dt = datetime.datetime.fromtimestamp(bed_time / 1000) if bed_time else None
 wake_dt = datetime.datetime.fromtimestamp(wake_time / 1000) if wake_time else None
 
-# --- Training Readiness ---
+# Training Readiness
 training_readiness = training_readiness_data.get("score") if isinstance(training_readiness_data, dict) else 0
 
-# --- Training Status ---
-raw_status_val = training_status_data.get("trainingStatus") if isinstance(training_status_data, dict) else None
+# Stats
+resting_hr = stats_data.get("restingHeartRate") or 0
+calories = stats_data.get("totalKilocalories") or 0
+
+# ---------------------------
+# FIX TRAINING STATUS
+# ---------------------------
 status_map = {
     0: "No Status",
     1: "Detraining",
@@ -93,14 +97,18 @@ status_map = {
     7: "Unproductive",
     8: "Strained",
 }
-training_status_val = status_map.get(int(raw_status_val), "Maintaining") if raw_status_val is not None else "Maintaining"
 
-# --- Stats ---
-resting_hr = stats_data.get("restingHeartRate") or 0
-calories = stats_data.get("totalKilocalories") or 0
+training_status_val = "Maintaining"
+if training_status_data:
+    code = training_status_data.get("trainingStatus")
+    if code is not None:
+        training_status_val = status_map.get(int(code), "Maintaining")
+    feedback = training_status_data.get("feedbackShortType") or training_status_data.get("feedbackLongType")
+    if feedback and "RECOVERING" in feedback.upper():
+        training_status_val = "Recovery"
 
 # ---------------------------
-# PUSH TO NOTION
+# NOTION HELPERS
 # ---------------------------
 def notion_number(value):
     return {"number": float(value) if value is not None else None}
@@ -126,6 +134,9 @@ def notion_date(dt):
 def notion_title(value):
     return {"title": [{"text": {"content": str(value)}}]}
 
+# ---------------------------
+# PUSH HEALTH METRICS
+# ---------------------------
 health_props = {
     "Name": notion_title(yesterday.strftime("%m/%d/%Y")),
     "Date": notion_date(yesterday_str),
@@ -149,6 +160,26 @@ try:
 except Exception as e:
     logging.error(f"❌ Failed to push health metrics: {e}")
 
+# ---------------------------
+# FIXED ACTIVITY LOGGING
+# ---------------------------
+for act in activities:
+    act_date = act.get("startTimeLocal", "")[:10] or yesterday_str
+    activity_props = {
+        "Date": notion_date(act_date),
+        "Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
+        "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
+        "Calories": notion_number(act.get("calories")),
+        "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
+        "Type": notion_select(act.get("activityType", {}).get("typeKey")),
+    }
+    try:
+        notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
+        logging.info(f"🏃 Logged activity: {act.get('activityName')}")
+    except Exception as e:
+        logging.error(f"⚠️ Failed to log activity {act.get('activityName')}: {e}")
+
 garmin.logout()
 logging.info("🏁 Sync complete.")
+
 
