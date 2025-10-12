@@ -1,7 +1,6 @@
 import os
 import datetime
 import logging
-import pprint
 from garminconnect import Garmin
 from notion_client import Client as NotionClient
 
@@ -48,7 +47,7 @@ training_status_data = garmin.get_training_status(yesterday_str) or {}
 stats_data = garmin.get_stats_and_body(yesterday_str) or {}
 
 # ---------------------------
-# PARSE HEALTH METRICS (UNCHANGED FROM LAST WORKING)
+# PARSE HEALTH METRICS (BASELINE WORKING LOGIC)
 # ---------------------------
 steps_total = sum(i.get("totalSteps", 0) for i in steps_data) if steps_data else 0
 
@@ -68,7 +67,7 @@ if isinstance(body_battery_data, list) and len(body_battery_data) > 0:
         bb_min = min(numbers)
         bb_max = max(numbers)
 
-# Sleep
+# Sleep (from baseline working script)
 sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore") or 0
 bed_time = sleep_daily.get("sleepStartTimestampGMT")
@@ -99,13 +98,18 @@ status_map = {
 }
 
 training_status_val = "Maintaining"
+
+# numeric code mapping
+code = training_status_data.get("trainingStatus") if training_status_data else None
+if code is not None:
+    training_status_val = status_map.get(int(code), "Maintaining")
+
+# feedback text override
+feedback = None
 if training_status_data:
-    code = training_status_data.get("trainingStatus")
-    if code is not None:
-        training_status_val = status_map.get(int(code), "Maintaining")
     feedback = training_status_data.get("feedbackShortType") or training_status_data.get("feedbackLongType")
-    if feedback and "RECOVERING" in feedback.upper():
-        training_status_val = "Recovery"
+if feedback and "RECOVERING" in feedback.upper():
+    training_status_val = "Recovery"
 
 # ---------------------------
 # NOTION HELPERS
@@ -181,5 +185,4 @@ for act in activities:
 
 garmin.logout()
 logging.info("🏁 Sync complete.")
-
 
