@@ -96,6 +96,9 @@ def convert_gmt_to_local(ts):
 # ---------------------------
 if __name__ == "__main__":
     try:
+        # ---------------------------
+        # DATE SETUP
+        # ---------------------------
         today = datetime.date.today()
         yesterday = today - datetime.timedelta(days=1)
         formatted_date = yesterday.strftime("%m/%d/%Y")  # MM/DD/YYYY for title
@@ -125,11 +128,18 @@ if __name__ == "__main__":
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-        sleep_score = extract_value(sleep_daily, ["sleepScoreFeedback", "sleepScore", "score", "overallScore"]) or 0
+        # --- Sleep Score ---
+        sleep_scores = sleep_daily.get("sleepScores", {})
+        if sleep_scores:
+            values = [v.get("value", 0) for v in sleep_scores.values() if isinstance(v, dict)]
+            sleep_score = sum(values) / len(values) if values else 0
+        else:
+            sleep_score = 0
+
         bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
         wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-        # Body Battery Min/Max
+        # --- Body Battery Min/Max ---
         body_battery_combined = "N/A"
         if isinstance(body_battery, list) and body_battery:
             bb = body_battery[0]
@@ -138,32 +148,39 @@ if __name__ == "__main__":
             if values:
                 body_battery_combined = f"{min(values)} / {max(values)}"
 
-        # Body Weight
+        # --- Body Weight ---
         body_weight = 0
         if body_comp.get("dateWeightList"):
             w_raw = body_comp["dateWeightList"][0].get("weight")
             if w_raw:
                 body_weight = round(float(w_raw) / 453.592, 2)
 
-        # Training Readiness
+        # --- Training Readiness ---
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # Training Status
+        # --- Training Status ---
         training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
-        training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-        feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
-        readiness_feedback = ""
+        training_status_val = "Maintaining"
+
         if readiness and isinstance(readiness, list) and readiness:
-            readiness_feedback = readiness[0].get("trainingFeedback", "")
-
-        if "RECOVERING" in str(feedback_hint).upper() or "RECOVERING" in str(readiness_feedback).upper():
-            training_status_val = "Recovery"
-        elif isinstance(training_status_val, (int, float)):
-            training_status_val = training_status_map.get(int(training_status_val), "Maintaining")
+            readiness_score = readiness[0].get("score")
+            if isinstance(readiness_score, (int, float)):
+                training_status_val = training_status_map.get(int(readiness_score), "Maintaining")
+            readiness_feedback = str(readiness[0].get("trainingFeedback", "")).upper()
         else:
-            training_status_val = "Maintaining"
+            readiness_feedback = ""
 
-        # Stress / HR / Calories / Steps
+        feedback_hint = ""
+        if body_battery and isinstance(body_battery, list):
+            feedback_hint = str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper()
+
+        if "RECOV" in feedback_hint or "RECOV" in readiness_feedback:
+            training_status_val = "Recovery"
+
+        # --- Stress / HR / Calories / Steps ---
+        if isinstance(stats, list) and stats:
+            stats = stats[0]
+
         stress = extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"]) or 0
         resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
         calories = extract_value(stats, ["totalKilocalories", "active_calories"]) or 0
@@ -223,4 +240,3 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.error(f"⚠️ Unhandled exception occurred: {e}", exc_info=True)
-
