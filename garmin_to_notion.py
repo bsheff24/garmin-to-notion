@@ -247,7 +247,7 @@ if __name__ == "__main__":
             act_date = act.get("startTimeLocal", "")[:10] or yesterday.isoformat()
             activity_props = {
                 "Date": notion_date(act_date),
-                "Activity Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
+                "Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
                 "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
                 "Calories": notion_number(act.get("calories")),
                 "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
@@ -264,3 +264,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.exception(f"❌ Unexpected error: {e}")
+
