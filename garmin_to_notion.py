@@ -152,11 +152,25 @@ if __name__ == "__main__":
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-        sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore"]) or 0
+        # --- Sleep Score (Fixed) ---
+        sleep_score = None
+        for key in ["sleepScore", "overallScore"]:
+            sleep_score = sleep_daily.get(key)
+            if sleep_score is not None:
+                break
+        if sleep_score is None or sleep_score <= 25:
+            scores_dict = sleep_daily.get("sleepScores", {})
+            if scores_dict:
+                deep = scores_dict.get("deepPercentage", {}).get("value", 0)
+                light = scores_dict.get("lightPercentage", {}).get("value", 0)
+                awake = scores_dict.get("awakeCount", {}).get("value", 0)
+                sleep_score = min(max(deep + light - awake, 0), 100)
+        sleep_score = sleep_score or 0
+
         bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
         wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-        # Body Battery Min/Max
+        # --- Body Battery Min/Max ---
         body_battery_combined = "N/A"
         if isinstance(body_battery, list) and body_battery:
             bb = body_battery[0]
@@ -165,26 +179,23 @@ if __name__ == "__main__":
             if values:
                 body_battery_combined = f"{min(values)} / {max(values)}"
 
+        # --- Body Weight ---
         body_weight = 0
         if body_comp.get("dateWeightList"):
             w_raw = body_comp["dateWeightList"][0].get("weight")
             if w_raw:
                 body_weight = round(float(w_raw) / 453.592, 2)
 
+        # --- Training Readiness ---
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # Training Status
-        training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
+        # --- Training Status (Fixed) ---
         training_status_val = "Maintaining"
-        if readiness and isinstance(readiness, list) and readiness:
-            readiness_score = readiness[0].get("score")
-            if isinstance(readiness_score, (int, float)):
-                training_status_val = training_status_map.get(int(readiness_score), "Maintaining")
-
         feedback_fields = []
-        if readiness and isinstance(readiness, list) and readiness:
+
+        if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
-        if body_battery and isinstance(body_battery, list):
+        if isinstance(body_battery, list) and body_battery:
             feedback_fields.append(str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper())
 
         for field in feedback_fields:
@@ -192,6 +203,14 @@ if __name__ == "__main__":
                 training_status_val = "Recovery"
                 break
 
+        if training_status_val not in ["Recovery"]:
+            training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
+            if isinstance(readiness, list) and readiness:
+                score = readiness[0].get("score")
+                if isinstance(score, (int, float)):
+                    training_status_val = training_status_map.get(int(score), "Maintaining")
+
+        # --- Other Stats ---
         if isinstance(stats, list) and stats:
             stats = stats[0]
         stress = extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"]) or 0
@@ -218,7 +237,6 @@ if __name__ == "__main__":
             highlight(steps_total, "Steps", min_val=0)
             highlight(body_weight, "Body Weight", min_val=0)
 
-            # Parse min/max from combined string for Body Battery
             try:
                 min_bb, max_bb = map(int, body_battery_combined.split(" / "))
             except:
