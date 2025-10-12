@@ -10,7 +10,7 @@ GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
 
-# === Initialize Garmin client (Updated for new garth versions) ===
+# === Initialize Garmin client ===
 garmin = GarminClient()
 garmin.login(GARMIN_USERNAME, GARMIN_PASSWORD)
 
@@ -25,7 +25,7 @@ yesterday_str = yesterday.strftime("%Y-%m-%d")
 print(f"📅 Collecting Garmin data for {yesterday_str}")
 
 try:
-    # ✅ Updated Garmin API calls
+    # === Fetch Garmin data ===
     daily_summary = garmin.get_daily_summary(yesterday_str)
     body_battery = garmin.get_body_battery(yesterday_str)
     weight = garmin.get_body_composition(yesterday_str)
@@ -33,7 +33,7 @@ try:
     readiness = garmin.get_training_readiness(yesterday_str)
     status = garmin.get_training_status(yesterday_str)
 
-    stats = daily_summary
+    stats = daily_summary or {}
 
     # === Extract Garmin data ===
     steps = stats.get("steps", 0)
@@ -53,7 +53,6 @@ try:
 
     # === Normalize Training Status ===
     raw_status = (status.get("trainingStatus", {}) or {}).get("primaryStatus", "").lower()
-
     status_map = {
         "peaking": "Peaking",
         "recovery": "Recovery",
@@ -65,22 +64,29 @@ try:
     }
     training_status = status_map.get(raw_status, "Maintaining")
 
-    # === Debug Print ===
-    print("🔍 Parsed Garmin metrics:")
-    print(f"Steps: {steps}, Body Weight: {body_weight}")
-    print(f"Body Battery Min: {bb_min}, Max: {bb_max}")
-    print(f"Sleep Score: {sleep_score}, Bedtime: {bedtime}, Wake Time: {waketime}")
-    print(f"Training Readiness: {training_readiness}, Training Status: {training_status}")
-    print(f"Resting HR: {resting_hr}, Stress: {stress}, Calories: {calories}")
-
-    # === Format Timestamps ===
+    # === Format date/time ===
     bed_dt = datetime.fromtimestamp(bedtime / 1000).astimezone() if bedtime else None
     wake_dt = datetime.fromtimestamp(waketime / 1000).astimezone() if waketime else None
     formatted_title = yesterday.strftime("%m/%d/%Y")
 
-    # === Build Notion Payload ===
+    # === Debugging output ===
+    print("🔍 Parsed Garmin metrics:")
+    print(f"Steps: {steps}, Body Weight: {body_weight}")
+    print(f"Body Battery Min: {bb_min}, Max: {bb_max}")
+    print(f"Sleep Score: {sleep_score}, Bedtime: {bed_dt}, Wake Time: {wake_dt}")
+    print(f"Training Readiness: {training_readiness}, Training Status: {training_status}")
+    print(f"Resting HR: {resting_hr}, Stress: {stress}, Calories: {calories}")
+
+    # === Detect Notion title property ===
+    db_info = notion.databases.retrieve(NOTION_HEALTH_DB_ID)
+    title_prop = next(
+        (k for k, v in db_info["properties"].items() if v["type"] == "title"), "Name"
+    )
+    print(f"🧩 Using title property: {title_prop}")
+
+    # === Build Notion page payload ===
     notion_page = {
-        "Name": {"title": [{"text": {"content": formatted_title}}]},
+        title_prop: {"title": [{"text": {"content": formatted_title}}]},
         "Date": {"date": {"start": datetime.now().isoformat()}},
         "Steps": {"number": steps},
         "Calories Burned": {"number": calories},
@@ -101,14 +107,16 @@ try:
 
     pprint.pprint(notion_page)
 
-    # === Push to Notion ===
+    # === Push to Notion with explicit error handling ===
     print("📤 Pushing Garmin health metrics to Notion...")
-    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=notion_page)
+    response = notion.pages.create(
+        parent={"database_id": NOTION_HEALTH_DB_ID}, properties=notion_page
+    )
     print(f"✅ Synced health metrics for {formatted_title}")
+    pprint.pprint(response)
 
 except Exception as e:
     print("❌ An error occurred while syncing Garmin data:")
     import traceback
-
     traceback.print_exc()
 
