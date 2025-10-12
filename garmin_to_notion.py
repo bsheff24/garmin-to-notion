@@ -248,4 +248,16 @@ if __name__ == "__main__":
                 "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
                 "Calories": notion_number(act.get("calories")),
                 "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
-                "Type": notion_select(act
+                "Type": notion_select(act.get("activityType", {}).get("typeKey")),
+            }
+            try:
+                notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
+                logging.info(f"🏃 Logged activity: {act.get('activityName')}")
+            except Exception as e:
+                logging.error(f"⚠️ Failed to log activity {act.get('activityName')}: {e}")
+
+        garmin.logout()
+        logging.info("🏁 Sync complete.")
+
+    except Exception as e:
+        logging.error(f"⚠️ Unhandled exception occurred: {e}", exc_info=True)
