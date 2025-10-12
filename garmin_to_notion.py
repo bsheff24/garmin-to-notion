@@ -2,6 +2,7 @@ import os
 import datetime
 import logging
 import pprint
+import pytz
 from garminconnect import Garmin
 from notion_client import Client
 
@@ -9,6 +10,7 @@ from notion_client import Client
 # CONFIG
 # ---------------------------
 DEBUG = True
+LOCAL_TZ = datetime.datetime.now().astimezone().tzinfo
 
 # ---------------------------
 # ENV VARIABLES
@@ -29,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # ---------------------------
 def notion_date(dt):
     if not dt:
-        dt = datetime.datetime.now()
+        dt = datetime.datetime.now().astimezone()
     if isinstance(dt, str):
         try:
             dt = datetime.datetime.fromisoformat(dt)
@@ -37,7 +39,9 @@ def notion_date(dt):
             try:
                 dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
             except Exception:
-                dt = datetime.datetime.now()
+                dt = datetime.datetime.now().astimezone()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=LOCAL_TZ)
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
@@ -120,20 +124,18 @@ if __name__ == "__main__":
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
         # --- Sleep Score ---
-        sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore") or 0
+        sleep_score = 0
+        if "sleepScores" in sleep_daily:
+            overall = sleep_daily["sleepScores"].get("overall")
+            if overall and "value" in overall:
+                sleep_score = overall["value"]
         sleep_score = max(0, min(sleep_score, 100))
 
         # --- Bedtime / Wake Time ---
-        bed_time = sleep_daily.get("sleepStartTimestampGMT")
-        wake_time = sleep_daily.get("sleepEndTimestampGMT")
-        if bed_time:
-            bed_time = datetime.datetime.fromtimestamp(bed_time / 1000)
-        else:
-            bed_time = datetime.datetime.now()
-        if wake_time:
-            wake_time = datetime.datetime.fromtimestamp(wake_time / 1000)
-        else:
-            wake_time = datetime.datetime.now()
+        bed_time_ms = sleep_daily.get("sleepStartTimestampGMT")
+        wake_time_ms = sleep_daily.get("sleepEndTimestampGMT")
+        bed_time = datetime.datetime.fromtimestamp(bed_time_ms / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ) if bed_time_ms else datetime.datetime.now().astimezone()
+        wake_time = datetime.datetime.fromtimestamp(wake_time_ms / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ) if wake_time_ms else datetime.datetime.now().astimezone()
 
         # --- Body Battery Min/Max ---
         body_battery_min = 0
@@ -172,7 +174,7 @@ if __name__ == "__main__":
         if isinstance(current_status_val, (int, float)):
             training_status_val = status_map.get(int(current_status_val), "Maintaining")
 
-        # Override based on feedback
+        # Override based on feedback from readiness and body battery
         feedback_fields = []
         if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
@@ -256,4 +258,3 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.exception(f"❌ Unexpected error: {e}")
-
