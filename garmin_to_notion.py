@@ -4,13 +4,11 @@ import logging
 import pprint
 from garminconnect import Garmin
 from notion_client import Client
-from zoneinfo import ZoneInfo  # Python >=3.9
 
 # ---------------------------
 # CONFIG
 # ---------------------------
 DEBUG = True
-LOCAL_TZ = ZoneInfo("America/New_York")  # replace with your timezone
 
 # ---------------------------
 # ENV VARIABLES
@@ -31,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # ---------------------------
 def notion_date(dt):
     if not dt:
-        return {"date": {"start": None}}
+        dt = datetime.datetime.now()
     if isinstance(dt, str):
         try:
             dt = datetime.datetime.fromisoformat(dt)
@@ -39,7 +37,7 @@ def notion_date(dt):
             try:
                 dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
             except Exception:
-                return {"date": {"start": None}}
+                dt = datetime.datetime.now()
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
@@ -49,13 +47,10 @@ def notion_number(value):
         return {"number": 0}
 
 def notion_select(value):
-    return {"select": {"name": str(value) if value else "N/A"}}
+    return {"select": {"name": str(value) if value else "Maintaining"}}
 
 def notion_title(value):
     return {"title": [{"text": {"content": str(value) if value else "N/A"}}]}
-
-def notion_text(value):
-    return {"rich_text": [{"text": {"content": str(value) if value else "N/A"}}]}
 
 def safe_fetch(func, *args):
     try:
@@ -86,15 +81,6 @@ def extract_value(data, keys):
             if nested is not None:
                 return nested
     return None
-
-def convert_gmt_to_local(ts):
-    if not ts:
-        return None
-    try:
-        dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
-        return dt.astimezone(LOCAL_TZ)
-    except:
-        return None
 
 # ---------------------------
 # MAIN SCRIPT
@@ -128,52 +114,34 @@ if __name__ == "__main__":
         status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or {}
         stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
-        if DEBUG:
-            logging.info("🔍 RAW GARMIN DATA")
-            logging.info("Activities:")
-            pprint.pprint(activities)
-            logging.info("Steps:")
-            pprint.pprint(steps)
-            logging.info("Sleep Data:")
-            pprint.pprint(sleep_data)
-            logging.info("Body Battery:")
-            pprint.pprint(body_battery)
-            logging.info("Body Composition:")
-            pprint.pprint(body_comp)
-            logging.info("Training Readiness:")
-            pprint.pprint(readiness)
-            logging.info("Training Status:")
-            pprint.pprint(status)
-            logging.info("Stats:")
-            pprint.pprint(stats)
-
         # ---------------------------
         # PARSE HEALTH METRICS
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
         # --- Sleep Score ---
-        sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore")
-        if sleep_score is None or sleep_score <= 25:
-            scores_dict = sleep_daily.get("sleepScores", {})
-            if scores_dict:
-                deep = scores_dict.get("deepPercentage", {}).get("value", 0)
-                light = scores_dict.get("lightPercentage", {}).get("value", 0)
-                awake = scores_dict.get("awakeCount", {}).get("value", 0)
-                sleep_score = min(max(deep + light - awake, 0), 100)
-        sleep_score = sleep_score or 0
+        sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore") or 0
+        sleep_score = max(0, min(sleep_score, 100))
 
-        bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
-        wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
+        # --- Bedtime / Wake Time ---
+        bed_time = sleep_daily.get("sleepStartTimestampGMT")
+        wake_time = sleep_daily.get("sleepEndTimestampGMT")
+        if bed_time:
+            bed_time = datetime.datetime.fromtimestamp(bed_time / 1000)
+        else:
+            bed_time = datetime.datetime.now()
+        if wake_time:
+            wake_time = datetime.datetime.fromtimestamp(wake_time / 1000)
+        else:
+            wake_time = datetime.datetime.now()
 
-        # --- Body Battery Min/Max ---
-        body_battery_combined = "N/A"
-        if isinstance(body_battery, list) and body_battery:
+        # --- Body Battery ---
+        body_battery_value = 0
+        if isinstance(body_battery, list) and len(body_battery) > 0:
             bb = body_battery[0]
-            arr = bb.get("bodyBatteryValuesArray") or []
-            values = [v[1] for v in arr if isinstance(v, list) and len(v) > 1]
-            if values:
-                body_battery_combined = f"{min(values)} / {max(values)}"
+            arr = bb.get("bodyBatteryValuesArray")
+            if arr and len(arr) > 0 and isinstance(arr[-1], list):
+                body_battery_value = arr[-1][1] or 0
 
         # --- Body Weight ---
         body_weight = 0
@@ -186,9 +154,7 @@ if __name__ == "__main__":
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
         # --- Training Status ---
-        training_status_val = "Maintaining"  # default
-
-        # Map Garmin numeric status
+        training_status_val = "Maintaining"
         status_map = {
             0: "No Status",
             1: "Detraining",
@@ -203,7 +169,7 @@ if __name__ == "__main__":
         if isinstance(current_status_val, (int, float)):
             training_status_val = status_map.get(int(current_status_val), "Maintaining")
 
-        # Override with feedback if available
+        # Override based on feedback
         feedback_fields = []
         if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
@@ -215,7 +181,7 @@ if __name__ == "__main__":
                 training_status_val = "Recovery"
                 break
 
-        # --- Other Stats ---
+        # --- Steps / HR / Calories ---
         if isinstance(stats, list) and stats:
             stats = stats[0]
         stress = extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"]) or 0
@@ -227,18 +193,11 @@ if __name__ == "__main__":
         # DEBUG LOGS
         # ---------------------------
         if DEBUG:
-            logging.info("🔍 PARSED GARMIN METRICS")
-            logging.info(f"Steps: {steps_total}")
-            logging.info(f"Body Weight: {body_weight}")
-            logging.info(f"Body Battery (Min/Max): {body_battery_combined}")
-            logging.info(f"Sleep Score: {sleep_score}")
-            logging.info(f"Bedtime: {bed_time}")
-            logging.info(f"Wake Time: {wake_time}")
-            logging.info(f"Training Readiness: {training_readiness}")
-            logging.info(f"Training Status: {training_status_val}")
-            logging.info(f"Resting HR: {resting_hr}")
-            logging.info(f"Stress: {stress}")
-            logging.info(f"Calories Burned: {calories}")
+            logging.info("🔍 Parsed Garmin metrics:")
+            logging.info(f"Steps: {steps_total}, Body Weight: {body_weight}, Body Battery: {body_battery_value}")
+            logging.info(f"Sleep Score: {sleep_score}, Bedtime: {bed_time}, Wake Time: {wake_time}")
+            logging.info(f"Training Readiness: {training_readiness}, Training Status: {training_status_val}")
+            logging.info(f"Resting HR: {resting_hr}, Stress: {stress}, Calories: {calories}")
 
         # ---------------------------
         # PUSH TO NOTION
@@ -248,7 +207,7 @@ if __name__ == "__main__":
             "Date": notion_date(formatted_date),
             "Steps": notion_number(steps_total),
             "Body Weight": notion_number(body_weight),
-            "Body Battery (Min/Max)": notion_text(body_battery_combined),
+            "Body Battery": notion_number(body_battery_value),
             "Sleep Score": notion_number(sleep_score),
             "Bedtime": notion_date(bed_time),
             "Wake Time": notion_date(wake_time),
@@ -260,6 +219,8 @@ if __name__ == "__main__":
         }
 
         logging.info("📤 Pushing Garmin health metrics to Notion...")
+        pprint.pprint(health_props)
+
         try:
             notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
             logging.info(f"✅ Synced health metrics for {formatted_date}")
