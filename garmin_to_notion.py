@@ -111,7 +111,7 @@ if __name__ == "__main__":
         body_battery = safe_fetch(garmin.get_body_battery, yesterday.isoformat(), yesterday.isoformat()) or []
         body_comp = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
         readiness = safe_fetch(garmin.get_training_readiness, yesterday.isoformat()) or []
-        status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or {}
+        status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or []
         stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
         # ---------------------------
@@ -135,13 +135,16 @@ if __name__ == "__main__":
         else:
             wake_time = datetime.datetime.now()
 
-        # --- Body Battery ---
-        body_battery_value = 0
+        # --- Body Battery Min/Max ---
+        body_battery_min = 0
+        body_battery_max = 0
         if isinstance(body_battery, list) and len(body_battery) > 0:
             bb = body_battery[0]
-            arr = bb.get("bodyBatteryValuesArray")
-            if arr and len(arr) > 0 and isinstance(arr[-1], list):
-                body_battery_value = arr[-1][1] or 0
+            values = bb.get("bodyBatteryValuesArray") or []
+            numeric_values = [v[1] for v in values if isinstance(v, list) and v[1] is not None]
+            if numeric_values:
+                body_battery_min = min(numeric_values)
+                body_battery_max = max(numeric_values)
 
         # --- Body Weight ---
         body_weight = 0
@@ -175,7 +178,6 @@ if __name__ == "__main__":
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
         if isinstance(body_battery, list) and body_battery:
             feedback_fields.append(str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper())
-
         for field in feedback_fields:
             if "RECOV" in field or "RECOVER" in field:
                 training_status_val = "Recovery"
@@ -194,7 +196,8 @@ if __name__ == "__main__":
         # ---------------------------
         if DEBUG:
             logging.info("🔍 Parsed Garmin metrics:")
-            logging.info(f"Steps: {steps_total}, Body Weight: {body_weight}, Body Battery: {body_battery_value}")
+            logging.info(f"Steps: {steps_total}, Body Weight: {body_weight}")
+            logging.info(f"Body Battery Min: {body_battery_min}, Max: {body_battery_max}")
             logging.info(f"Sleep Score: {sleep_score}, Bedtime: {bed_time}, Wake Time: {wake_time}")
             logging.info(f"Training Readiness: {training_readiness}, Training Status: {training_status_val}")
             logging.info(f"Resting HR: {resting_hr}, Stress: {stress}, Calories: {calories}")
@@ -207,7 +210,8 @@ if __name__ == "__main__":
             "Date": notion_date(formatted_date),
             "Steps": notion_number(steps_total),
             "Body Weight": notion_number(body_weight),
-            "Body Battery": notion_number(body_battery_value),
+            "Body Battery (Min)": notion_number(body_battery_min),
+            "Body Battery (Max)": notion_number(body_battery_max),
             "Sleep Score": notion_number(sleep_score),
             "Bedtime": notion_date(bed_time),
             "Wake Time": notion_date(wake_time),
@@ -252,3 +256,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.exception(f"❌ Unexpected error: {e}")
+
