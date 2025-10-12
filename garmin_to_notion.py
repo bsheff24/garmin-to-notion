@@ -227,7 +227,6 @@ if __name__ == "__main__":
             "Training Readiness": notion_number(training_readiness),
             "Training Status": notion_select(training_status_val),
             "Resting HR": notion_number(resting_hr),
-            "Stress": notion_number(stress),
             "Calories Burned": notion_number(calories),
         }
 
@@ -247,7 +246,7 @@ if __name__ == "__main__":
             act_date = act.get("startTimeLocal", "")[:10] or yesterday.isoformat()
             activity_props = {
                 "Date": notion_date(act_date),
-                "Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
+                "Activity Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
                 "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
                 "Calories": notion_number(act.get("calories")),
                 "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
