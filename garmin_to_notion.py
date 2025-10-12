@@ -4,17 +4,20 @@ from datetime import datetime, timedelta
 from notion_client import Client as NotionClient
 from garth import Client as GarminClient
 
-# Environment variables
+# === Environment variables ===
 GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
 GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
 
-# Initialize clients
-garmin = GarminClient(username=GARMIN_USERNAME, password=GARMIN_PASSWORD)
+# === Initialize Garmin client (Updated for new garth versions) ===
+garmin = GarminClient()
+garmin.login(GARMIN_USERNAME, GARMIN_PASSWORD)
+
+# === Initialize Notion client ===
 notion = NotionClient(auth=NOTION_TOKEN)
 
-# Date handling
+# === Date handling ===
 today = datetime.now()
 yesterday = today - timedelta(days=1)
 yesterday_str = yesterday.strftime("%Y-%m-%d")
@@ -22,7 +25,7 @@ yesterday_str = yesterday.strftime("%Y-%m-%d")
 print(f"📅 Collecting Garmin data for {yesterday_str}")
 
 try:
-    # ✅ Updated API calls (fix for deprecated get_wellness)
+    # ✅ Updated Garmin API calls
     daily_summary = garmin.get_daily_summary(yesterday_str)
     body_battery = garmin.get_body_battery(yesterday_str)
     weight = garmin.get_body_composition(yesterday_str)
@@ -30,10 +33,9 @@ try:
     readiness = garmin.get_training_readiness(yesterday_str)
     status = garmin.get_training_status(yesterday_str)
 
-    # Use daily summary instead of wellness
     stats = daily_summary
 
-    # Extract Garmin data safely
+    # === Extract Garmin data ===
     steps = stats.get("steps", 0)
     calories = stats.get("totalKilocalories", 0)
     resting_hr = stats.get("restingHeartRate", 0)
@@ -49,10 +51,9 @@ try:
 
     training_readiness = readiness.get("trainingReadinessScore", 0)
 
-    # Normalize training status mapping
+    # === Normalize Training Status ===
     raw_status = (status.get("trainingStatus", {}) or {}).get("primaryStatus", "").lower()
 
-    # Map Garmin’s raw status text to Notion select options
     status_map = {
         "peaking": "Peaking",
         "recovery": "Recovery",
@@ -62,9 +63,9 @@ try:
         "detraining": "Detraining",
         "strained": "Strained",
     }
-
     training_status = status_map.get(raw_status, "Maintaining")
 
+    # === Debug Print ===
     print("🔍 Parsed Garmin metrics:")
     print(f"Steps: {steps}, Body Weight: {body_weight}")
     print(f"Body Battery Min: {bb_min}, Max: {bb_max}")
@@ -72,17 +73,12 @@ try:
     print(f"Training Readiness: {training_readiness}, Training Status: {training_status}")
     print(f"Resting HR: {resting_hr}, Stress: {stress}, Calories: {calories}")
 
-    # Format times and date
-    bed_dt = (
-        datetime.fromtimestamp(bedtime / 1000).astimezone() if bedtime else None
-    )
-    wake_dt = (
-        datetime.fromtimestamp(waketime / 1000).astimezone() if waketime else None
-    )
-
+    # === Format Timestamps ===
+    bed_dt = datetime.fromtimestamp(bedtime / 1000).astimezone() if bedtime else None
+    wake_dt = datetime.fromtimestamp(waketime / 1000).astimezone() if waketime else None
     formatted_title = yesterday.strftime("%m/%d/%Y")
 
-    # Build Notion payload
+    # === Build Notion Payload ===
     notion_page = {
         "Name": {"title": [{"text": {"content": formatted_title}}]},
         "Date": {"date": {"start": datetime.now().isoformat()}},
@@ -105,6 +101,7 @@ try:
 
     pprint.pprint(notion_page)
 
+    # === Push to Notion ===
     print("📤 Pushing Garmin health metrics to Notion...")
     notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=notion_page)
     print(f"✅ Synced health metrics for {formatted_title}")
