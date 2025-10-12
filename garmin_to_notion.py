@@ -2,9 +2,9 @@ import os
 import datetime
 import logging
 import pprint
-import pytz
 from garminconnect import Garmin
 from notion_client import Client
+import pytz  # to handle local timezone conversion
 
 # ---------------------------
 # CONFIG
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # ---------------------------
 def notion_date(dt):
     if not dt:
-        dt = datetime.datetime.now().astimezone()
+        dt = datetime.datetime.now()
     if isinstance(dt, str):
         try:
             dt = datetime.datetime.fromisoformat(dt)
@@ -39,9 +39,9 @@ def notion_date(dt):
             try:
                 dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
             except Exception:
-                dt = datetime.datetime.now().astimezone()
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=LOCAL_TZ)
+                dt = datetime.datetime.now()
+    if isinstance(dt, datetime.datetime):
+        dt = dt.astimezone(LOCAL_TZ)
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
@@ -126,16 +126,21 @@ if __name__ == "__main__":
         # --- Sleep Score ---
         sleep_score = 0
         if "sleepScores" in sleep_daily:
-            overall = sleep_daily["sleepScores"].get("overall")
-            if overall and "value" in overall:
-                sleep_score = overall["value"]
+            overall = sleep_daily["sleepScores"].get("overall", {})
+            sleep_score = overall.get("value", 0)
         sleep_score = max(0, min(sleep_score, 100))
 
-        # --- Bedtime / Wake Time ---
-        bed_time_ms = sleep_daily.get("sleepStartTimestampGMT")
-        wake_time_ms = sleep_daily.get("sleepEndTimestampGMT")
-        bed_time = datetime.datetime.fromtimestamp(bed_time_ms / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ) if bed_time_ms else datetime.datetime.now().astimezone()
-        wake_time = datetime.datetime.fromtimestamp(wake_time_ms / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ) if wake_time_ms else datetime.datetime.now().astimezone()
+        # --- Bedtime / Wake Time (convert GMT → local) ---
+        bed_time = sleep_daily.get("sleepStartTimestampGMT")
+        wake_time = sleep_daily.get("sleepEndTimestampGMT")
+        if bed_time:
+            bed_time = datetime.datetime.fromtimestamp(bed_time / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ)
+        else:
+            bed_time = datetime.datetime.now()
+        if wake_time:
+            wake_time = datetime.datetime.fromtimestamp(wake_time / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ)
+        else:
+            wake_time = datetime.datetime.now()
 
         # --- Body Battery Min/Max ---
         body_battery_min = 0
@@ -159,7 +164,6 @@ if __name__ == "__main__":
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
         # --- Training Status ---
-        training_status_val = "Maintaining"
         status_map = {
             0: "No Status",
             1: "Detraining",
@@ -170,11 +174,14 @@ if __name__ == "__main__":
             6: "Strained",
             7: "Unproductive"
         }
+
         current_status_val = extract_value(status, ["currentStatus", "trainingStatus"])
         if isinstance(current_status_val, (int, float)):
             training_status_val = status_map.get(int(current_status_val), "Maintaining")
+        else:
+            training_status_val = "Maintaining"
 
-        # Override based on feedback from readiness and body battery
+        # Override based on feedback text
         feedback_fields = []
         if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
@@ -226,7 +233,6 @@ if __name__ == "__main__":
 
         logging.info("📤 Pushing Garmin health metrics to Notion...")
         pprint.pprint(health_props)
-
         try:
             notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
             logging.info(f"✅ Synced health metrics for {formatted_date}")
@@ -258,3 +264,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.exception(f"❌ Unexpected error: {e}")
+
