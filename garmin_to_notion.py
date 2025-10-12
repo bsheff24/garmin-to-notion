@@ -152,12 +152,8 @@ if __name__ == "__main__":
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-        # --- Sleep Score (Fixed) ---
-        sleep_score = None
-        for key in ["sleepScore", "overallScore"]:
-            sleep_score = sleep_daily.get(key)
-            if sleep_score is not None:
-                break
+        # --- Sleep Score ---
+        sleep_score = sleep_daily.get("sleepScore") or sleep_daily.get("overallScore")
         if sleep_score is None or sleep_score <= 25:
             scores_dict = sleep_daily.get("sleepScores", {})
             if scores_dict:
@@ -189,10 +185,26 @@ if __name__ == "__main__":
         # --- Training Readiness ---
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # --- Training Status (Fixed) ---
-        training_status_val = "Maintaining"
-        feedback_fields = []
+        # --- Training Status ---
+        training_status_val = "Maintaining"  # default
 
+        # Map Garmin numeric status
+        status_map = {
+            0: "No Status",
+            1: "Detraining",
+            2: "Maintaining",
+            3: "Recovery",
+            4: "Productive",
+            5: "Peaking",
+            6: "Strained",
+            7: "Unproductive"
+        }
+        current_status_val = extract_value(status, ["currentStatus", "trainingStatus"])
+        if isinstance(current_status_val, (int, float)):
+            training_status_val = status_map.get(int(current_status_val), "Maintaining")
+
+        # Override with feedback if available
+        feedback_fields = []
         if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
         if isinstance(body_battery, list) and body_battery:
@@ -203,13 +215,6 @@ if __name__ == "__main__":
                 training_status_val = "Recovery"
                 break
 
-        if training_status_val not in ["Recovery"]:
-            training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
-            if isinstance(readiness, list) and readiness:
-                score = readiness[0].get("score")
-                if isinstance(score, (int, float)):
-                    training_status_val = training_status_map.get(int(score), "Maintaining")
-
         # --- Other Stats ---
         if isinstance(stats, list) and stats:
             stats = stats[0]
@@ -219,43 +224,28 @@ if __name__ == "__main__":
         steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
         # ---------------------------
-        # DEBUG WITH SANITY HIGHLIGHTS
+        # DEBUG LOGS
         # ---------------------------
         if DEBUG:
-            logging.info("🔍 PARSED GARMIN METRICS (with sanity checks)")
-
-            def highlight(value, name, min_val=None, max_val=None, allowed_values=None):
-                msg = f"{name}: {value}"
-                if allowed_values and value not in allowed_values:
-                    msg += " ⚠️ Unexpected value!"
-                if min_val is not None and value < min_val:
-                    msg += f" ⚠️ Below expected ({min_val})"
-                if max_val is not None and value > max_val:
-                    msg += f" ⚠️ Above expected ({max_val})"
-                logging.info(msg)
-
-            highlight(steps_total, "Steps", min_val=0)
-            highlight(body_weight, "Body Weight", min_val=0)
-
-            try:
-                min_bb, max_bb = map(int, body_battery_combined.split(" / "))
-            except:
-                min_bb = max_bb = None
-            if min_bb is not None and max_bb is not None:
-                highlight(min_bb, "Body Battery Min", 0, 100)
-                highlight(max_bb, "Body Battery Max", 0, 100)
-
-            highlight(sleep_score, "Sleep Score", 0, 100)
-            highlight(training_status_val, "Training Status", allowed_values=["Recovery", "Maintaining", "Productive", "Peaking"])
-            highlight(resting_hr, "Resting HR", 0, 220)
-            highlight(calories, "Calories Burned", 0)
+            logging.info("🔍 PARSED GARMIN METRICS")
+            logging.info(f"Steps: {steps_total}")
+            logging.info(f"Body Weight: {body_weight}")
+            logging.info(f"Body Battery (Min/Max): {body_battery_combined}")
+            logging.info(f"Sleep Score: {sleep_score}")
+            logging.info(f"Bedtime: {bed_time}")
+            logging.info(f"Wake Time: {wake_time}")
+            logging.info(f"Training Readiness: {training_readiness}")
+            logging.info(f"Training Status: {training_status_val}")
+            logging.info(f"Resting HR: {resting_hr}")
+            logging.info(f"Stress: {stress}")
+            logging.info(f"Calories Burned: {calories}")
 
         # ---------------------------
         # PUSH TO NOTION
         # ---------------------------
         health_props = {
             "Name": notion_title(formatted_date),
-            "Date": notion_date(yesterday),
+            "Date": notion_date(formatted_date),
             "Steps": notion_number(steps_total),
             "Body Weight": notion_number(body_weight),
             "Body Battery (Min/Max)": notion_text(body_battery_combined),
@@ -269,14 +259,10 @@ if __name__ == "__main__":
             "Calories Burned": notion_number(calories),
         }
 
-        if DEBUG:
-            logging.info("📤 HEALTH PROPERTIES TO PUSH TO NOTION")
-            pprint.pprint(health_props)
-
+        logging.info("📤 Pushing Garmin health metrics to Notion...")
         try:
-            result = notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
-            logging.info("✅ Notion API response:")
-            pprint.pprint(result)
+            notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
+            logging.info(f"✅ Synced health metrics for {formatted_date}")
         except Exception as e:
             logging.error(f"⚠️ Failed to push health metrics: {e}")
 
@@ -292,7 +278,7 @@ if __name__ == "__main__":
                 "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
                 "Calories": notion_number(act.get("calories")),
                 "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
-                "Type": notion_select(extract_value(act.get("activityType", {}), ["typeKey"])),
+                "Type": notion_select(act.get("activityType", {}).get("typeKey")),
             }
             try:
                 notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
@@ -304,4 +290,4 @@ if __name__ == "__main__":
         logging.info("🏁 Sync complete.")
 
     except Exception as e:
-        logging.error(f"⚠️ Unhandled exception occurred: {e}", exc_info=True)
+        logging.exception(f"❌ Unexpected error: {e}")
