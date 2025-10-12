@@ -7,6 +7,12 @@ from notion_client import Client
 from zoneinfo import ZoneInfo  # Python >=3.9
 
 # ---------------------------
+# CONFIG
+# ---------------------------
+DEBUG = True
+LOCAL_TZ = ZoneInfo("America/New_York")  # replace with your timezone
+
+# ---------------------------
 # ENV VARIABLES
 # ---------------------------
 GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
@@ -14,7 +20,6 @@ GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
 NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
-LOCAL_TZ = ZoneInfo("America/New_York")  # replace with your timezone
 
 # ---------------------------
 # LOGGING
@@ -101,7 +106,7 @@ if __name__ == "__main__":
         # ---------------------------
         today = datetime.date.today()
         yesterday = today - datetime.timedelta(days=1)
-        formatted_date = yesterday.strftime("%m/%d/%Y")  # MM/DD/YYYY for title
+        formatted_date = yesterday.strftime("%m/%d/%Y")
         logging.info(f"📅 Collecting Garmin data for {formatted_date}")
 
         # ---------------------------
@@ -123,23 +128,35 @@ if __name__ == "__main__":
         status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or {}
         stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
+        if DEBUG:
+            logging.info("🔍 RAW GARMIN DATA")
+            logging.info("Activities:")
+            pprint.pprint(activities)
+            logging.info("Steps:")
+            pprint.pprint(steps)
+            logging.info("Sleep Data:")
+            pprint.pprint(sleep_data)
+            logging.info("Body Battery:")
+            pprint.pprint(body_battery)
+            logging.info("Body Composition:")
+            pprint.pprint(body_comp)
+            logging.info("Training Readiness:")
+            pprint.pprint(readiness)
+            logging.info("Training Status:")
+            pprint.pprint(status)
+            logging.info("Stats:")
+            pprint.pprint(stats)
+
         # ---------------------------
         # PARSE HEALTH METRICS
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-        # --- Sleep Score ---
-        sleep_scores = sleep_daily.get("sleepScores", {})
-        if sleep_scores:
-            values = [v.get("value", 0) for v in sleep_scores.values() if isinstance(v, dict)]
-            sleep_score = sum(values) / len(values) if values else 0
-        else:
-            sleep_score = 0
-
+        sleep_score = extract_value(sleep_daily, ["sleepScore", "overallScore"]) or 0
         bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
         wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-        # --- Body Battery Min/Max ---
+        # Body Battery Min/Max
         body_battery_combined = "N/A"
         if isinstance(body_battery, list) and body_battery:
             bb = body_battery[0]
@@ -148,43 +165,72 @@ if __name__ == "__main__":
             if values:
                 body_battery_combined = f"{min(values)} / {max(values)}"
 
-        # --- Body Weight ---
         body_weight = 0
         if body_comp.get("dateWeightList"):
             w_raw = body_comp["dateWeightList"][0].get("weight")
             if w_raw:
                 body_weight = round(float(w_raw) / 453.592, 2)
 
-        # --- Training Readiness ---
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # --- Training Status ---
+        # Training Status
         training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
         training_status_val = "Maintaining"
-
         if readiness and isinstance(readiness, list) and readiness:
             readiness_score = readiness[0].get("score")
             if isinstance(readiness_score, (int, float)):
                 training_status_val = training_status_map.get(int(readiness_score), "Maintaining")
-            readiness_feedback = str(readiness[0].get("trainingFeedback", "")).upper()
-        else:
-            readiness_feedback = ""
 
-        feedback_hint = ""
+        feedback_fields = []
+        if readiness and isinstance(readiness, list) and readiness:
+            feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
         if body_battery and isinstance(body_battery, list):
-            feedback_hint = str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper()
+            feedback_fields.append(str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper())
 
-        if "RECOV" in feedback_hint or "RECOV" in readiness_feedback:
-            training_status_val = "Recovery"
+        for field in feedback_fields:
+            if "RECOV" in field or "RECOVER" in field:
+                training_status_val = "Recovery"
+                break
 
-        # --- Stress / HR / Calories / Steps ---
         if isinstance(stats, list) and stats:
             stats = stats[0]
-
         stress = extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"]) or 0
         resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
         calories = extract_value(stats, ["totalKilocalories", "active_calories"]) or 0
         steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
+
+        # ---------------------------
+        # DEBUG WITH SANITY HIGHLIGHTS
+        # ---------------------------
+        if DEBUG:
+            logging.info("🔍 PARSED GARMIN METRICS (with sanity checks)")
+
+            def highlight(value, name, min_val=None, max_val=None, allowed_values=None):
+                msg = f"{name}: {value}"
+                if allowed_values and value not in allowed_values:
+                    msg += " ⚠️ Unexpected value!"
+                if min_val is not None and value < min_val:
+                    msg += f" ⚠️ Below expected ({min_val})"
+                if max_val is not None and value > max_val:
+                    msg += f" ⚠️ Above expected ({max_val})"
+                logging.info(msg)
+
+            highlight(steps_total, "Steps", min_val=0)
+            highlight(body_weight, "Body Weight", min_val=0)
+
+            # Parse min/max from combined string for Body Battery
+            try:
+                min_bb, max_bb = map(int, body_battery_combined.split(" / "))
+            except:
+                min_bb = max_bb = None
+            if min_bb is not None and max_bb is not None:
+                highlight(min_bb, "Body Battery Min", 0, 100)
+                highlight(max_bb, "Body Battery Max", 0, 100)
+
+            highlight(sleep_score, "Sleep Score", 0, 100)
+            highlight(training_status_val, "Training Status", allowed_values=["Recovery", "Maintaining", "Productive", "Peaking"])
+            highlight(resting_hr, "Resting HR", 0, 220)
+            highlight(calories, "Calories Burned", 0)
 
         # ---------------------------
         # PUSH TO NOTION
@@ -205,8 +251,9 @@ if __name__ == "__main__":
             "Calories Burned": notion_number(calories),
         }
 
-        logging.info("📤 Pushing health metrics to Notion:")
-        pprint.pprint(health_props)
+        if DEBUG:
+            logging.info("📤 HEALTH PROPERTIES TO PUSH TO NOTION")
+            pprint.pprint(health_props)
 
         try:
             result = notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
