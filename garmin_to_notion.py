@@ -38,7 +38,10 @@ def notion_date(dt):
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
-    return {"number": float(value) if value is not None else 0}
+    try:
+        return {"number": float(value) if value is not None else 0}
+    except:
+        return {"number": 0}
 
 def notion_select(value):
     return {"select": {"name": str(value) if value else "N/A"}}
@@ -93,18 +96,14 @@ def convert_gmt_to_local(ts):
 # ---------------------------
 if __name__ == "__main__":
     try:
-        # ---------------------------
-        # DATE SETUP
-        # ---------------------------
         today = datetime.date.today()
         yesterday = today - datetime.timedelta(days=1)
-        yesterday_str = yesterday.strftime("%m/%d/%Y")  # For title display
-        logging.info(f"📅 Collecting Garmin data for {yesterday_str}")
+        formatted_date = yesterday.strftime("%m/%d/%Y")  # MM/DD/YYYY for title
+        logging.info(f"📅 Collecting Garmin data for {formatted_date}")
 
         # ---------------------------
         # LOGIN
         # ---------------------------
-        logging.info("🔐 Logging into Garmin...")
         notion = Client(auth=NOTION_TOKEN)
         garmin = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
         garmin.login()
@@ -113,69 +112,48 @@ if __name__ == "__main__":
         # FETCH GARMIN DATA
         # ---------------------------
         activities = safe_fetch(garmin.get_activities, 0, 10) or []
-        steps = safe_fetch(garmin.get_daily_steps, yesterday_str, yesterday_str) or []
-        sleep_data = safe_fetch(garmin.get_sleep_data, yesterday_str) or {}
-        body_battery = safe_fetch(garmin.get_body_battery, yesterday_str, yesterday_str) or []
-        body_comp = safe_fetch(garmin.get_body_composition, yesterday_str) or {}
-        readiness = safe_fetch(garmin.get_training_readiness, yesterday_str) or []
-        status = safe_fetch(garmin.get_training_status, yesterday_str) or {}
-        stats = safe_fetch(garmin.get_stats_and_body, yesterday_str) or {}
-
-        # ---------------------------
-        # DEBUG RAW DATA
-        # ---------------------------
-        logging.info("🔍 RAW Garmin Data Snapshots")
-        logging.info("=== sleep_daily ===")
-        pprint.pprint(sleep_data.get("dailySleepDTO", {}))
-        logging.info("=== body_battery ===")
-        pprint.pprint(body_battery)
-        logging.info("=== readiness ===")
-        pprint.pprint(readiness)
-        logging.info("=== stats ===")
-        pprint.pprint(stats)
+        steps = safe_fetch(garmin.get_daily_steps, yesterday.isoformat(), yesterday.isoformat()) or []
+        sleep_data = safe_fetch(garmin.get_sleep_data, yesterday.isoformat()) or {}
+        body_battery = safe_fetch(garmin.get_body_battery, yesterday.isoformat(), yesterday.isoformat()) or []
+        body_comp = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
+        readiness = safe_fetch(garmin.get_training_readiness, yesterday.isoformat()) or []
+        status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or {}
+        stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
         # ---------------------------
         # PARSE HEALTH METRICS
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
 
-        # --- Sleep Score ---
-        sleep_score = (
-            sleep_daily.get("sleepScoreFeedback")
-            or extract_value(sleep_daily, ["sleepScore", "score", "overallScore"])
-            or 0
-        )
-
-        # --- Sleep times ---
+        sleep_score = extract_value(sleep_daily, ["sleepScoreFeedback", "sleepScore", "score", "overallScore"]) or 0
         bed_time = convert_gmt_to_local(sleep_daily.get("sleepStartTimestampGMT"))
         wake_time = convert_gmt_to_local(sleep_daily.get("sleepEndTimestampGMT"))
 
-        # --- Body Battery Min/Max ---
+        # Body Battery Min/Max
         body_battery_combined = "N/A"
-        if isinstance(body_battery, list) and len(body_battery) > 0:
+        if isinstance(body_battery, list) and body_battery:
             bb = body_battery[0]
             arr = bb.get("bodyBatteryValuesArray") or []
             values = [v[1] for v in arr if isinstance(v, list) and len(v) > 1]
             if values:
                 body_battery_combined = f"{min(values)} / {max(values)}"
 
-        # --- Body Weight ---
-        body_weight = None
+        # Body Weight
+        body_weight = 0
         if body_comp.get("dateWeightList"):
             w_raw = body_comp["dateWeightList"][0].get("weight")
             if w_raw:
                 body_weight = round(float(w_raw) / 453.592, 2)
 
-        # --- Training Readiness ---
+        # Training Readiness
         training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # --- Training Status ---
+        # Training Status
         training_status_map = {2: "Maintaining", 3: "Recovery", 4: "Productive", 5: "Peaking"}
         training_status_val = extract_value(status, ["trainingStatus", "status", "unknown_2", "currentStatus"])
-
         feedback_hint = extract_value(body_battery, ["feedbackShortType", "feedbackLongType"]) or ""
         readiness_feedback = ""
-        if readiness and isinstance(readiness, list) and len(readiness) > 0:
+        if readiness and isinstance(readiness, list) and readiness:
             readiness_feedback = readiness[0].get("trainingFeedback", "")
 
         if "RECOVERING" in str(feedback_hint).upper() or "RECOVERING" in str(readiness_feedback).upper():
@@ -185,33 +163,17 @@ if __name__ == "__main__":
         else:
             training_status_val = "Maintaining"
 
-        # --- Stress / HR / Calories / Steps ---
+        # Stress / HR / Calories / Steps
         stress = extract_value(stats, ["avgSleepStress", "stressLevelAvg", "stressScore"]) or 0
         resting_hr = extract_value(stats, ["restingHeartRate", "heart_rate"]) or 0
         calories = extract_value(stats, ["totalKilocalories", "active_calories"]) or 0
         steps_total = sum(i.get("totalSteps", 0) for i in steps) if isinstance(steps, list) else 0
 
         # ---------------------------
-        # DEBUG PARSED METRICS
-        # ---------------------------
-        logging.info("🧠 Garmin health metrics summary:")
-        logging.info(f"  Steps: {steps_total}")
-        logging.info(f"  Body Weight: {body_weight or 'N/A'}")
-        logging.info(f"  Body Battery (Min/Max): {body_battery_combined}")
-        logging.info(f"  Sleep Score: {sleep_score}")
-        logging.info(f"  Bedtime: {bed_time or 'N/A'}")
-        logging.info(f"  Wake Time: {wake_time or 'N/A'}")
-        logging.info(f"  Training Readiness: {training_readiness}")
-        logging.info(f"  Training Status: {training_status_val}")
-        logging.info(f"  Resting HR: {resting_hr}")
-        logging.info(f"  Stress: {stress}")
-        logging.info(f"  Calories: {calories}")
-
-        # ---------------------------
         # PUSH TO NOTION
         # ---------------------------
         health_props = {
-            "Name": notion_title(yesterday_str),
+            "Name": notion_title(formatted_date),
             "Date": notion_date(yesterday),
             "Steps": notion_number(steps_total),
             "Body Weight": notion_number(body_weight),
@@ -226,7 +188,7 @@ if __name__ == "__main__":
             "Calories Burned": notion_number(calories),
         }
 
-        logging.info("📤 Pushing the following properties to Notion:")
+        logging.info("📤 Pushing health metrics to Notion:")
         pprint.pprint(health_props)
 
         try:
@@ -241,14 +203,14 @@ if __name__ == "__main__":
         # ---------------------------
         logging.info(f"📤 Syncing {len(activities)} activities...")
         for act in activities:
-            act_date = act.get("startTimeLocal", "")[:10] or yesterday.strftime("%Y-%m-%d")
+            act_date = act.get("startTimeLocal", "")[:10] or yesterday.isoformat()
             activity_props = {
                 "Date": notion_date(act_date),
                 "Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
                 "Distance (km)": notion_number((act.get("distance") or 0) / 1000),
                 "Calories": notion_number(act.get("calories")),
                 "Duration (min)": notion_number(round((act.get("duration") or 0) / 60, 1)),
-                "Type": notion_select(act.get("activityType", {}).get("typeKey")),
+                "Type": notion_select(extract_value(act.get("activityType", {}), ["typeKey"])),
             }
             try:
                 notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
@@ -261,3 +223,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.error(f"⚠️ Unhandled exception occurred: {e}", exc_info=True)
+
