@@ -62,6 +62,11 @@ def notion_select(value):
 def notion_title(value):
     return {"title": [{"text": {"content": str(value) if value else "N/A"}}]}
 
+def notion_text(value):
+    if value is None:
+        return None
+    return {"rich_text": [{"text": {"content": str(value)}}]}
+
 def safe_fetch(func, *args, **kwargs):
     try:
         return func(*args, **kwargs)
@@ -152,6 +157,9 @@ def needs_update(existing, new_props):
         elif "date" in value:
             if existing_val.get("date",{}).get("start") != value["date"]["start"]:
                 return True
+        elif "rich_text" in value:
+            if existing_val.get("rich_text",[{}])[0].get("text",{}).get("content") != value["rich_text"][0]["text"]["content"]:
+                return True
     return False
 
 # ---------------------------
@@ -219,13 +227,13 @@ def main():
 
     try:
         notion.pages.create(parent={"database_id":NOTION_HEALTH_DB_ID}, properties=health_props)
-        logging.info("✅ Synced health metrics")
+        logging.info(f"✅ Synced health metrics for {iso_yesterday}")
     except Exception as e:
         logging.error(f"⚠️ Failed to push health metrics: {e}")
         pprint.pprint(health_props)
 
     # ---------------------------
-    # ACTIVITIES (future-safe)
+    # ACTIVITIES (recent + backfill attempt)
     # ---------------------------
     activities = safe_fetch(garmin.get_activities, 0, 50) or []
     logging.info(f"📤 Found {len(activities)} recent activities")
@@ -238,7 +246,8 @@ def main():
         distance_km = (act.get("distance") or 0)/1000
         duration_min = round((act.get("duration") or 0)/60,1)
         avg_pace_minkm = (duration_min/distance_km) if distance_km>0 else None
-        avg_pace_mi = (duration_min/(distance_km*0.621371)) if distance_km>0 else None
+        distance_mi = distance_km * 0.621371
+        avg_pace_mi = (duration_min/distance_mi) if distance_mi>0 else None
         training_effect = training_effect_map.get(act.get("trainingEffect",0),"Unknown")
         ae_effect = act.get("aeEffect",{}).get("value")
         an_effect = act.get("anEffect",{}).get("value")
@@ -248,10 +257,10 @@ def main():
             "Date": notion_date(act_date),
             "Activity Name": notion_title(activity_name),
             "Distance (km)": notion_number(distance_km),
-            "Distance (mi)": notion_number(distance_km*0.621371),
+            "Distance (mi)": notion_number(distance_mi),
             "Duration (min)": notion_number(duration_min),
-            "Avg Pace (min/km)": notion_number(avg_pace_minkm),
-            "Avg Pace (min/mi)": notion_number(avg_pace_mi),
+            "Avg Pace (min/km)": notion_text(f"{avg_pace_minkm:.2f}" if avg_pace_minkm else ""),
+            "Avg Pace (min/mi)": notion_text(f"{avg_pace_mi:.2f}" if avg_pace_mi else ""),
             "Calories": notion_number(act.get("calories")),
             "Type": notion_select(activity_type),
             "Training Effect": notion_select(training_effect),
