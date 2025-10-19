@@ -4,7 +4,7 @@ import logging
 import pprint
 from garminconnect import Garmin
 from notion_client import Client
-import pytz
+import pytz  # to handle local timezone conversion
 
 # ---------------------------
 # CONFIG
@@ -31,23 +31,26 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # ---------------------------
 def notion_date(dt):
     if not dt:
-        return {"date": None}
+        dt = datetime.datetime.now()
     if isinstance(dt, str):
         try:
             dt = datetime.datetime.fromisoformat(dt)
-        except Exception:
-            return {"date": None}
+        except ValueError:
+            try:
+                dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
+            except Exception:
+                dt = datetime.datetime.now()
     if isinstance(dt, datetime.datetime):
         dt = dt.astimezone(LOCAL_TZ)
     return {"date": {"start": dt.isoformat()}}
 
 def notion_number(value):
-    if value in (None, "", 0):
-        return {"number": None}
+    if value is None:
+        return None
     try:
-        return {"number": round(float(value), 2)}
+        return {"number": float(value)}
     except:
-        return {"number": None}
+        return {"number": 0}
 
 def notion_select(value):
     return {"select": {"name": str(value) if value else "Maintaining"}}
@@ -85,7 +88,6 @@ def extract_value(data, keys):
                 return nested
     return None
 
-
 # ---------------------------
 # MAIN SCRIPT
 # ---------------------------
@@ -96,6 +98,9 @@ if __name__ == "__main__":
         formatted_date = yesterday.strftime("%m/%d/%Y")
         logging.info(f"📅 Collecting Garmin data for {formatted_date}")
 
+        # ---------------------------
+        # LOGIN
+        # ---------------------------
         notion = Client(auth=NOTION_TOKEN)
         garmin = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
         garmin.login()
@@ -113,46 +118,44 @@ if __name__ == "__main__":
         stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
         # ---------------------------
-        # PARSE HEALTH DATA
+        # PARSE HEALTH METRICS
         # ---------------------------
         sleep_daily = sleep_data.get("dailySleepDTO", {}) if sleep_data else {}
+        sleep_score = extract_value(sleep_daily, ["sleepScores", "overall", "value"]) or 0
 
-        # Sleep score
-        sleep_score = 0
-        if "sleepScores" in sleep_daily:
-            overall = sleep_daily["sleepScores"].get("overall", {})
-            sleep_score = overall.get("value", 0)
-        sleep_score = max(0, min(sleep_score, 100))
-
-        # Bedtime / Wake time (GMT → local)
+        # Bedtime/Wake Time
         bed_time = sleep_daily.get("sleepStartTimestampGMT")
         wake_time = sleep_daily.get("sleepEndTimestampGMT")
         if bed_time:
             bed_time = datetime.datetime.fromtimestamp(bed_time / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ)
+        else:
+            bed_time = None
         if wake_time:
             wake_time = datetime.datetime.fromtimestamp(wake_time / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ)
+        else:
+            wake_time = None
 
-        # Body battery
-        body_battery_min, body_battery_max = None, None
-        if isinstance(body_battery, list) and len(body_battery) > 0:
-            bb = body_battery[0]
-            values = bb.get("bodyBatteryValuesArray") or []
-            numeric_values = [v[1] for v in values if isinstance(v, list) and v[1] is not None]
+        # Body Battery
+        body_battery_min = 0
+        body_battery_max = 0
+        if body_battery and isinstance(body_battery, list):
+            bb_values = body_battery[0].get("bodyBatteryValuesArray") or []
+            numeric_values = [v[1] for v in bb_values if isinstance(v, list) and v[1] is not None]
             if numeric_values:
                 body_battery_min = min(numeric_values)
                 body_battery_max = max(numeric_values)
 
-        # Weight (in lbs)
+        # Body Weight
         body_weight = None
         if body_comp.get("dateWeightList"):
             w_raw = body_comp["dateWeightList"][0].get("weight")
             if w_raw:
                 body_weight = round(float(w_raw) / 453.592, 2)
 
-        # Training readiness
-        training_readiness = extract_value(readiness, ["score", "trainingReadinessScore"]) or 0
+        # Training Readiness
+        training_readiness = extract_value(readiness, ["score", "trainingReadinessScore", "unknown_0"]) or 0
 
-        # Training status mapping
+        # Training Status
         status_map = {
             0: "No Status",
             1: "Detraining",
@@ -163,23 +166,23 @@ if __name__ == "__main__":
             6: "Strained",
             7: "Unproductive",
             8: "Overreaching",
-            9: "Paused",
+            9: "Paused"
         }
         current_status_val = extract_value(status, ["currentStatus", "trainingStatus"])
-        if isinstance(current_status_val, (int, float)):
-            training_status_val = status_map.get(int(current_status_val), "Maintaining")
-        else:
-            training_status_val = "Maintaining"
+        training_status_val = status_map.get(int(current_status_val), "Maintaining") if isinstance(current_status_val, (int, float)) else "Maintaining"
 
-        # Override logic for Recovery / Strained based on feedback
         feedback_fields = []
         if isinstance(readiness, list) and readiness:
             feedback_fields.append(str(readiness[0].get("trainingFeedback", "")).upper())
+        if body_battery and isinstance(body_battery, list):
+            feedback_fields.append(str(extract_value(body_battery[0], ["feedbackShortType", "feedbackLongType"])).upper())
         for field in feedback_fields:
-            if "RECOVER" in field:
+            if "RECOV" in field or "RECOVER" in field:
                 training_status_val = "Recovery"
-            elif "STRAIN" in field:
+                break
+            if "STRAIN" in field:
                 training_status_val = "Strained"
+                break
 
         # Stats
         if isinstance(stats, list) and stats:
@@ -207,43 +210,60 @@ if __name__ == "__main__":
             "Resting HR": notion_number(resting_hr),
             "Calories Burned": notion_number(calories),
         }
-
-        notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
-        logging.info(f"✅ Synced health metrics for {formatted_date}")
+        logging.info("📤 Pushing Garmin health metrics to Notion...")
+        pprint.pprint(health_props)
+        try:
+            notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
+            logging.info(f"✅ Synced health metrics for {formatted_date}")
+        except Exception as e:
+            logging.error(f"⚠️ Failed to push health metrics: {e}")
 
         # ---------------------------
         # PUSH ACTIVITIES
         # ---------------------------
         logging.info(f"📤 Syncing {len(activities)} activities...")
+        training_effect_map = {
+            0: "Unknown",
+            1: "Recovery",
+            2: "Aerobic Base",
+            3: "Tempo",
+            4: "Lactate Threshold",
+            5: "Vo2Max",
+            6: "Anaerobic Capacity"
+        }
+        ae_an_options = ["Overreaching","Highly Impacting","Impacting","Improving","Maintaining","Some Benefit","Recovery","No Benefit","Unknown"]
 
         for act in activities:
             act_date = act.get("startTimeLocal", "")[:10] or yesterday.isoformat()
             distance_km = (act.get("distance") or 0) / 1000
-            distance_mi = distance_km * 0.621371
-            duration_min = (act.get("duration") or 0) / 60
-            avg_pace = round(duration_min / distance_mi, 2) if distance_mi > 0 else None
-
-            aerobic = act.get("aerobicTrainingEffect") or 0
-            anaerobic = act.get("anaerobicTrainingEffect") or 0
-            ratio = round(aerobic / anaerobic, 2) if anaerobic else None
+            duration_min = round((act.get("duration") or 0) / 60, 1)
+            avg_pace = duration_min / distance_km if distance_km > 0 else None
+            training_effect = training_effect_map.get(act.get("trainingEffect", 0), "Unknown")
+            ae_effect = act.get("aeEffect", {}).get("value", None)
+            an_effect = act.get("anEffect", {}).get("value", None)
 
             activity_props = {
                 "Date": notion_date(act_date),
                 "Activity Name": notion_title(act.get("activityName") or f"Activity {act_date}"),
                 "Distance (km)": notion_number(distance_km),
-                "Distance (mi)": notion_number(distance_mi),
-                "Calories": notion_number(act.get("calories")),
+                "Distance (mi)": notion_number(distance_km * 0.621371),
                 "Duration (min)": notion_number(duration_min),
                 "Avg Pace (min/mi)": notion_number(avg_pace),
+                "Calories": notion_number(act.get("calories")),
                 "Type": notion_select(act.get("activityType", {}).get("typeKey")),
-                "Training Effect": notion_select(act.get("trainingEffectLabel")),
-                "Aerobic Effect": notion_select(act.get("aerobicTrainingEffectMessage")),
-                "Anaerobic Effect": notion_select(act.get("anaerobicTrainingEffectMessage")),
-                "AE:AN": notion_number(ratio),
+                "Training Effect": notion_select(training_effect),
+                "Aerobic": notion_number(ae_effect),
+                "Anaerobic": notion_number(an_effect),
+                "AE:AN": notion_number(ae_effect / an_effect if an_effect else None),
+                "Aerobic Effect": notion_select(ae_an_options[ae_effect] if ae_effect is not None and ae_effect < len(ae_an_options) else "Unknown"),
+                "Anaerobic Effect": notion_select(ae_an_options[an_effect] if an_effect is not None and an_effect < len(ae_an_options) else "Unknown")
             }
 
-            notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
-            logging.info(f"🏃 Logged activity: {act.get('activityName')}")
+            try:
+                notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
+                logging.info(f"🏃 Logged activity: {act.get('activityName')}")
+            except Exception as e:
+                logging.error(f"⚠️ Failed to log activity {act.get('activityName')}: {e}")
 
         garmin.logout()
         logging.info("🏁 Sync complete.")
