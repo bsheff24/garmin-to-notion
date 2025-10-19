@@ -11,7 +11,7 @@ import pytz
 # ---------------------------
 DEBUG = True
 LOCAL_TZ = datetime.datetime.now().astimezone().tzinfo
-BACKFILL_DAYS = 14  # Past days to backfill activities
+BACKFILL_DAYS = 30  # Number of days back to sync activities
 
 # ---------------------------
 # ENV VARIABLES
@@ -153,6 +153,29 @@ def needs_update(existing, new_props):
                 return True
     return False
 
+def get_all_activities_paginated(garmin, days_back=BACKFILL_DAYS):
+    all_acts = []
+    offset = 0
+    batch_size = 50
+    cutoff_date = datetime.date.today() - datetime.timedelta(days=days_back)
+    while True:
+        batch = safe_fetch(garmin.get_activities, offset, batch_size) or []
+        if not batch:
+            break
+        for act in batch:
+            act_date = act.get("startTimeLocal")
+            if not act_date:
+                continue
+            try:
+                act_day = datetime.datetime.fromisoformat(act_date[:10]).date()
+            except:
+                continue
+            if act_day < cutoff_date:
+                return all_acts
+            all_acts.append(act)
+        offset += batch_size
+    return all_acts
+
 # ---------------------------
 # MAIN SCRIPT
 # ---------------------------
@@ -228,23 +251,17 @@ def main():
     # ---------------------------
     # ACTIVITIES (backfill)
     # ---------------------------
-    all_activities = safe_fetch(garmin.get_activities, 0, 1000) or []
-    start_date = today - datetime.timedelta(days=BACKFILL_DAYS)
-    filtered_activities = [
-        act for act in all_activities
-        if datetime.datetime.fromisoformat(act.get("startTimeLocal","1970-01-01T00:00:00")).date() >= start_date
-    ]
+    all_activities = get_all_activities_paginated(garmin, BACKFILL_DAYS)
+    logging.info(f"📤 Syncing {len(all_activities)} activities...")
 
-    logging.info(f"📤 Syncing {len(filtered_activities)} activities...")
-
-    for act in filtered_activities:
+    for act in all_activities:
         act_date = act.get("startTimeLocal","")
         activity_name = act.get("activityName",f"Activity {act_date[:10]}")
         activity_type, activity_subtype = format_activity_type(act.get("activityType",{}).get("typeKey","Unknown"), activity_name)
         distance_km = (act.get("distance") or 0)/1000
         duration_min = round((act.get("duration") or 0)/60,1)
         avg_pace_minkm = round(duration_min/distance_km,2) if distance_km>0 else None
-        avg_pace_mi = round(avg_pace_minkm*1.60934,2) if avg_pace_minkm else None
+        avg_pace_mi = round(avg_pace_minkm*0.621371,2) if avg_pace_minkm else None
         training_effect = act.get("trainingEffectLabel","Unknown")
         ae_effect = act.get("aeEffect",{}).get("value")
         an_effect = act.get("anEffect",{}).get("value")
