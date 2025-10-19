@@ -4,14 +4,12 @@ import logging
 import pprint
 from garminconnect import Garmin
 from notion_client import Client
-import pytz
 
 # ---------------------------
 # CONFIG
 # ---------------------------
 DEBUG = True
 LOCAL_TZ = datetime.datetime.now().astimezone().tzinfo
-BACKFILL_START_DATE = datetime.date(2025, 10, 7)  # Earliest date to fetch activities
 
 # ---------------------------
 # ENV VARIABLES
@@ -39,7 +37,7 @@ def notion_date(dt):
         except ValueError:
             try:
                 dt = datetime.datetime.strptime(dt, "%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except:
                 try:
                     dt = datetime.datetime.strptime(dt, "%Y-%m-%d")
                 except:
@@ -227,76 +225,57 @@ def main():
         pprint.pprint(health_props)
 
     # ---------------------------
-    # ACTIVITIES (daily fetch for backfill)
+    # ACTIVITIES (future-safe)
     # ---------------------------
-    logging.info(f"📤 Fetching activities from {BACKFILL_START_DATE} to {yesterday}")
-    day_count = (yesterday - BACKFILL_START_DATE).days + 1
-    for d in range(day_count):
-        day = BACKFILL_START_DATE + datetime.timedelta(days=d)
-        day_str = day.isoformat()
-        activities = safe_fetch(garmin.get_activities, 0, 50) or []  # fallback: replace with daily fetch if API allows
-        for act in activities:
-            act_date_raw = act.get("startTimeLocal")
-            if not act_date_raw:
-                continue
-            # Try parsing multiple formats
-            try:
-                act_date = datetime.datetime.fromisoformat(act_date_raw).isoformat()
-            except:
-                try:
-                    act_date = datetime.datetime.strptime(act_date_raw, "%Y-%m-%d %H:%M:%S").isoformat()
-                except:
-                    try:
-                        act_date = datetime.datetime.strptime(act_date_raw, "%Y-%m-%d").isoformat()
-                    except:
-                        continue
+    activities = safe_fetch(garmin.get_activities, 0, 50) or []
+    logging.info(f"📤 Found {len(activities)} recent activities")
 
-            if not act_date.startswith(day_str):
-                continue
+    training_effect_map = {0:"Unknown",1:"Recovery",2:"Aerobic Base",3:"Tempo",4:"Lactate Threshold",5:"Vo2Max",6:"Anaerobic Capacity"}
 
-            activity_name = act.get("activityName",f"Activity {day_str}")
-            activity_type, activity_subtype = format_activity_type(act.get("activityType",{}).get("typeKey","Unknown"), activity_name)
-            distance_km = (act.get("distance") or 0)/1000
-            duration_min = round((act.get("duration") or 0)/60,1)
-            avg_pace_minkm = round(duration_min/distance_km,2) if distance_km>0 else None
-            avg_pace_mi = round(avg_pace_minkm*0.621371,2) if avg_pace_minkm else None
-            training_effect = act.get("trainingEffectLabel","Unknown")
-            ae_effect = act.get("aeEffect",{}).get("value")
-            an_effect = act.get("anEffect",{}).get("value")
+    for act in activities:
+        act_date = act.get("startTimeLocal","")[:10] or iso_yesterday
+        activity_name = act.get("activityName") or f"Activity {act_date}"
+        distance_km = (act.get("distance") or 0)/1000
+        duration_min = round((act.get("duration") or 0)/60,1)
+        avg_pace_minkm = (duration_min/distance_km) if distance_km>0 else None
+        avg_pace_mi = (duration_min/(distance_km*0.621371)) if distance_km>0 else None
+        training_effect = training_effect_map.get(act.get("trainingEffect",0),"Unknown")
+        ae_effect = act.get("aeEffect",{}).get("value")
+        an_effect = act.get("anEffect",{}).get("value")
+        activity_type, _ = format_activity_type(act.get("activityType",{}).get("typeKey"), activity_name)
 
-            activity_props = {
-                "Date": notion_date(act_date),
-                "Activity Name": notion_title(activity_name),
-                "Distance (km)": notion_number(distance_km),
-                "Distance (mi)": notion_number(distance_km*0.621371),
-                "Duration (min)": notion_number(duration_min),
-                "Avg Pace (min/km)": notion_number(avg_pace_minkm),
-                "Avg Pace (min/mi)": notion_number(avg_pace_mi),
-                "Calories": notion_number(act.get("calories")),
-                "Type": notion_select(activity_type),
-                "Training Effect": notion_select(training_effect),
-                "Aerobic": notion_number(ae_effect),
-                "Anaerobic": notion_number(an_effect),
-                "AE:AN": notion_number(ae_effect/an_effect if an_effect else None),
-                "Aerobic Effect": notion_select(ae_effect),
-                "Anaerobic Effect": notion_select(an_effect)
-            }
+        activity_props = {
+            "Date": notion_date(act_date),
+            "Activity Name": notion_title(activity_name),
+            "Distance (km)": notion_number(distance_km),
+            "Distance (mi)": notion_number(distance_km*0.621371),
+            "Duration (min)": notion_number(duration_min),
+            "Avg Pace (min/km)": notion_number(avg_pace_minkm),
+            "Avg Pace (min/mi)": notion_number(avg_pace_mi),
+            "Calories": notion_number(act.get("calories")),
+            "Type": notion_select(activity_type),
+            "Training Effect": notion_select(training_effect),
+            "Aerobic": notion_number(ae_effect),
+            "Anaerobic": notion_number(an_effect),
+            "AE:AN": notion_number(ae_effect/an_effect if an_effect else None)
+        }
 
-            existing = activity_exists(notion, NOTION_ACTIVITIES_DB_ID, act_date, activity_type, activity_name)
-            try:
-                if existing:
-                    if needs_update(existing, activity_props):
-                        notion.pages.update(page_id=existing['id'], properties=activity_props)
-                        logging.info(f"🔄 Updated activity: {activity_name}")
-                else:
-                    notion.pages.create(parent={"database_id":NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
-                    logging.info(f"🏃 Logged activity: {activity_name}")
-            except Exception as e:
-                logging.error(f"⚠️ Failed to log activity {activity_name}: {e}")
-                pprint.pprint(activity_props)
+        existing = activity_exists(notion, NOTION_ACTIVITIES_DB_ID, act_date, activity_type, activity_name)
+        try:
+            if existing:
+                if needs_update(existing, activity_props):
+                    notion.pages.update(page_id=existing['id'], properties=activity_props)
+                    logging.info(f"🔄 Updated activity: {activity_name}")
+            else:
+                notion.pages.create(parent={"database_id":NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
+                logging.info(f"🏃 Logged activity: {activity_name}")
+        except Exception as e:
+            logging.error(f"⚠️ Failed to log activity {activity_name}: {e}")
+            pprint.pprint(activity_props)
 
     garmin.logout()
     logging.info("🏁 Sync complete.")
 
 if __name__=="__main__":
     main()
+
