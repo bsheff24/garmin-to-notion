@@ -44,6 +44,18 @@ if DEBUG:
 # ---------------------------
 # HELPERS
 # ---------------------------
+def safe_fetch(func, *args, **kwargs):
+    """
+    Safely call a Garmin API function and handle connection errors gracefully.
+    Returns None if the call fails.
+    """
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        print(f"⚠️ Error fetching from Garmin API ({func.__name__}): {e}")
+        return None
+
+
 def parse_garmin_datetime(dt_str):
     """Try multiple formats Garmin may return. Return ISO 8601 string or None."""
     if not dt_str:
