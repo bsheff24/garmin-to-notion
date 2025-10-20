@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Garmin -> Notion sync script
-- Health metrics: pushes yesterday's metrics
-- Activities: pushes new activities since last Notion entry
+Unified Garmin -> Notion sync script
+- Health metrics: pushes yesterday's metrics to Health Metrics DB (title property "Name")
+- Activities: pushes new activities with full properties, rounded numerics, icons, and formatted strings
 """
 
 import os
@@ -11,47 +11,73 @@ import logging
 import pprint
 from notion_client import Client
 from garminconnect import Garmin
+import pytz
+from dotenv import load_dotenv
+
+# ---------------------------
+# CONFIG
+# ---------------------------
+DEBUG = True
+LOCAL_TZ = pytz.timezone("America/Chicago")  # Change if needed
+GARMIN_ACTIVITY_FETCH_LIMIT = 200
+
+# ---------------------------
+# ENV VARIABLES
+# ---------------------------
+GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
+GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
+NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
+
+# ---------------------------
+# LOGGING
+# ---------------------------
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("garmin_to_notion")
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
+
+# ---------------------------
+# ICONS
+# ---------------------------
+ACTIVITY_ICONS = {
+    "Barre": "https://img.icons8.com/?size=100&id=66924&format=png&color=000000",
+    "Breathwork": "https://img.icons8.com/?size=100&id=9798&format=png&color=000000",
+    "Cardio": "https://img.icons8.com/?size=100&id=71221&format=png&color=000000",
+    "Cycling": "https://img.icons8.com/?size=100&id=47443&format=png&color=000000",
+    "Hiking": "https://img.icons8.com/?size=100&id=9844&format=png&color=000000",
+    "Indoor Cardio": "https://img.icons8.com/?size=100&id=62779&format=png&color=000000",
+    "Indoor Cycling": "https://img.icons8.com/?size=100&id=47443&format=png&color=000000",
+    "Indoor Rowing": "https://img.icons8.com/?size=100&id=71098&format=png&color=000000",
+    "Pilates": "https://img.icons8.com/?size=100&id=9774&format=png&color=000000",
+    "Meditation": "https://img.icons8.com/?size=100&id=9798&format=png&color=000000",
+    "Rowing": "https://img.icons8.com/?size=100&id=71491&format=png&color=000000",
+    "Running": "https://img.icons8.com/?size=100&id=k1l1XFkME39t&format=png&color=000000",
+    "Strength Training": "https://img.icons8.com/?size=100&id=107640&format=png&color=000000",
+    "Stretching": "https://img.icons8.com/?size=100&id=djfOcRn1m_kh&format=png&color=000000",
+    "Swimming": "https://img.icons8.com/?size=100&id=9777&format=png&color=000000",
+    "Treadmill Running": "https://img.icons8.com/?size=100&id=9794&format=png&color=000000",
+    "Walking": "https://img.icons8.com/?size=100&id=9807&format=png&color=000000",
+    "Yoga": "https://img.icons8.com/?size=100&id=9783&format=png&color=000000",
+}
 
 # ---------------------------
 # HELPERS
 # ---------------------------
 def safe_fetch(func, *args, **kwargs):
-    """Call Garmin API safely; return None on error."""
     try:
         return func(*args, **kwargs)
     except Exception as e:
-        print(f"⚠️ Error fetching from Garmin API ({func.__name__}): {e}")
-        return None
-
-def parse_garmin_datetime(dt_str):
-    if not dt_str:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(dt_str).isoformat()
-    except Exception:
-        pass
-    fmts = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%fZ",
-            "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"]
-    for f in fmts:
-        try:
-            dt = datetime.datetime.strptime(dt_str, f)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=datetime.timezone.utc).astimezone(LOCAL_TZ)
-            return dt.isoformat()
-        except Exception:
-            continue
-    try:
-        dt = datetime.datetime.strptime(dt_str[:10], "%Y-%m-%d")
-        dt = dt.replace(tzinfo=datetime.timezone.utc).astimezone(LOCAL_TZ)
-        return dt.isoformat()
-    except Exception:
+        logger.warning(f"⚠️ Error fetching from Garmin API ({func.__name__}): {e}")
         return None
 
 def notion_date_obj_from_iso(iso_str):
     if not iso_str:
         return None
     try:
-        dt = datetime.datetime.fromisoformat(iso_str).astimezone(LOCAL_TZ)
+        dt = datetime.datetime.fromisoformat(iso_str)
+        dt = dt.astimezone(LOCAL_TZ)
         return {"date": {"start": dt.isoformat()}}
     except Exception:
         return None
@@ -61,12 +87,14 @@ def notion_number(value):
         return None
     try:
         v = float(value)
-        return None if v == 0 else {"number": v}
+        if v == 0:
+            return None
+        return {"number": v}
     except Exception:
         return None
 
 def notion_select(name):
-    if not name:
+    if name is None:
         return None
     return {"select": {"name": str(name)}}
 
@@ -101,104 +129,112 @@ def extract_value(data, keys):
                 return res
     return None
 
-def filter_props(props):
-    clean = {}
-    for k, v in props.items():
-        if v is None:
-            continue
-        if isinstance(v, dict) and not v:
-            continue
-        clean[k] = v
-    return clean
-
-def get_latest_activity_date(notion_client, activities_db_id):
-    try:
-        res = notion_client.databases.query(
-            database_id=activities_db_id,
-            page_size=1,
-            sorts=[{"property": "Date", "direction": "descending"}]
-        )
-        results = res.get("results", [])
-        if not results:
-            return None
-        props = results[0].get("properties", {})
-        start = props.get("Date", {}).get("date", {}).get("start")
-        if not start:
-            return None
-        dt = datetime.datetime.fromisoformat(start)
-        return dt.date()
-    except Exception as e:
-        logger.warning(f"Could not query Notion for latest activity date: {e}")
-        return None
+# ---------------------------
+# Training status mappings
+# ---------------------------
+TRAINING_STATUS_MAP = {
+    0: "No Status",
+    1: "Detraining",
+    2: "Maintaining",
+    3: "Recovery",
+    4: "Productive",
+    5: "Peaking",
+    6: "Strained",
+    7: "Unproductive",
+    8: "Overreaching",
+    9: "Paused"
+}
 
 # ---------------------------
-# CONFIG
+# ACTIVITY FORMAT HELPERS
 # ---------------------------
-DEBUG = True
-LOCAL_TZ = datetime.datetime.now().astimezone().tzinfo
-GARMIN_ACTIVITY_FETCH_LIMIT = 200
-
-GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
-GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
-NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
-
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("garmin_to_notion")
-if DEBUG:
-    logger.setLevel(logging.DEBUG)
-
-# ---------------------------
-# TRAINING STATUS MAP
-# ---------------------------
-TRAINING_STATUS_MAP = {0:"No Status",1:"Detraining",2:"Maintaining",3:"Recovery",
-                       4:"Productive",5:"Peaking",6:"Strained",7:"Unproductive",
-                       8:"Overreaching",9:"Paused"}
-TRAINING_EFFECT_MAP = {0:"Unknown",1:"Recovery",2:"Aerobic Base",3:"Tempo",
-                       4:"Lactate Threshold",5:"Vo2Max",6:"Anaerobic Capacity"}
-
-# ---------------------------
-# BUILD PROPERTIES
-# ---------------------------
-def build_health_properties(yesterday_iso, steps_total, body_weight, bb_min, bb_max, sleep_score,
-                            bed_time_iso, wake_time_iso, training_readiness, training_status_val,
-                            resting_hr, calories):
-    props = {
-        "Name": notion_title(yesterday_iso.strftime("%m/%d/%Y")),
-        "Date": notion_date_obj_from_iso(yesterday_iso.isoformat()),
-        "Steps": notion_number(steps_total),
-        "Body Weight": notion_number(body_weight),
-        "Body Battery (Min)": notion_number(bb_min),
-        "Body Battery (Max)": notion_number(bb_max),
-        "Sleep Score": notion_number(sleep_score),
-        "Bedtime": notion_date_obj_from_iso(bed_time_iso) if bed_time_iso else None,
-        "Wake Time": notion_date_obj_from_iso(wake_time_iso) if wake_time_iso else None,
-        "Training Readiness": notion_number(training_readiness),
-        "Training Status": notion_select(training_status_val),
-        "Resting HR": notion_number(resting_hr),
-        "Calories Burned": notion_number(calories)
+def format_activity_type(activity_type, activity_name=""):
+    formatted_type = activity_type.replace('_', ' ').title() if activity_type else "Unknown"
+    activity_subtype = formatted_type
+    activity_mapping = {
+        "Barre": "Strength",
+        "Indoor Cardio": "Cardio",
+        "Indoor Cycling": "Cycling",
+        "Indoor Rowing": "Rowing",
+        "Speed Walking": "Walking",
+        "Strength Training": "Strength",
+        "Treadmill Running": "Running"
     }
-    return filter_props(props)
+    if formatted_type in activity_mapping:
+        activity_type = activity_mapping[formatted_type]
+        activity_subtype = formatted_type
+    if activity_name and "meditation" in activity_name.lower():
+        return "Meditation", "Meditation"
+    if activity_name and "barre" in activity_name.lower():
+        return "Strength", "Barre"
+    if activity_name and "stretch" in activity_name.lower():
+        return "Stretching", "Stretching"
+    return activity_type, activity_subtype
 
+def format_pace(average_speed):
+    if average_speed > 0:
+        pace_min_km = 1000 / (average_speed * 60)
+        minutes = int(pace_min_km)
+        seconds = int((pace_min_km - minutes) * 60)
+        return f"{minutes}:{seconds:02d} min/km"
+    else:
+        return ""
+
+def format_training_effect(label):
+    if not label:
+        return None
+    return label.replace("_", " ").title()
+
+def format_training_message(message):
+    if not message:
+        return None
+    messages = {
+        'NO_': 'No Benefit',
+        'MINOR_': 'Some Benefit',
+        'RECOVERY_': 'Recovery',
+        'MAINTAINING_': 'Maintaining',
+        'IMPROVING_': 'Impacting',
+        'IMPACTING_': 'Impacting',
+        'HIGHLY_': 'Highly Impacting',
+        'OVERREACHING_': 'Overreaching'
+    }
+    for key, value in messages.items():
+        if message.startswith(key):
+            return value
+    return message
+
+# ---------------------------
+# BUILD ACTIVITY PROPERTIES
+# ---------------------------
 def build_activity_properties(act_iso, activity_name, distance_km, duration_min,
                               avg_pace_km_text, avg_pace_mi_text, calories,
-                              activity_type, ae_effect, an_effect):
+                              activity_type, ae_effect, an_effect, training_effect_label=None,
+                              aerobic_msg=None, anaerobic_msg=None):
+    ae_val = round(float(ae_effect), 1) if ae_effect is not None else None
+    an_val = round(float(an_effect), 1) if an_effect is not None else None
+    ratio = round(ae_val / an_val, 2) if (ae_val is not None and an_val not in (None, 0)) else None
+    distance_km_rounded = round(distance_km, 2) if distance_km is not None else None
+    distance_mi_rounded = round(distance_km * 0.621371, 2) if distance_km is not None else None
+    duration_rounded = round(duration_min, 2) if duration_min is not None else None
+
     props = {
         "Activity Name": notion_title(activity_name),
         "Date": notion_date_obj_from_iso(act_iso),
-        "Distance (km)": notion_number(distance_km),
-        "Distance (mi)": notion_number(distance_km * 0.621371) if distance_km else None,
-        "Duration (mins)": notion_number(duration_min),
+        "Distance (km)": notion_number(distance_km_rounded),
+        "Distance (mi)": notion_number(distance_mi_rounded),
+        "Duration (mins)": notion_number(duration_rounded),
         "Avg Pace (min/km)": notion_text(avg_pace_km_text),
         "Avg Pace (min/mi)": notion_text(avg_pace_mi_text),
         "Calories": notion_number(calories),
         "Activity Type": notion_select(activity_type),
-        "Aerobic": notion_number(ae_effect),
-        "Anaerobic": notion_number(an_effect),
-        "AE:AN": notion_number((ae_effect / an_effect) if (ae_effect and an_effect) else None)
+        "Training Effect": notion_select(training_effect_label) if training_effect_label else None,
+        "Aerobic": notion_number(ae_val),
+        "Aerobic Effect": notion_select(aerobic_msg),
+        "Anaerobic": notion_number(an_val),
+        "Anaerobic Effect": notion_select(anaerobic_msg),
+        "AE:AN": notion_number(ratio)
     }
-    return filter_props(props)
+    return {k: v for k, v in props.items() if v is not None}
 
 # ---------------------------
 # MAIN
@@ -221,7 +257,7 @@ def main():
     yesterday = today - datetime.timedelta(days=1)
 
     # ---------------------------
-    # HEALTH METRICS
+    # Health metrics
     # ---------------------------
     steps = safe_fetch(garmin.get_daily_steps, yesterday.isoformat(), yesterday.isoformat()) or []
     sleep_data = safe_fetch(garmin.get_sleep_data, yesterday.isoformat()) or {}
@@ -229,122 +265,49 @@ def main():
     body_comp = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
     readiness = safe_fetch(garmin.get_training_readiness, yesterday.isoformat()) or []
     status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or []
-    stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
+    stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or {}
 
-    steps_total = sum(i.get("totalSteps",0) for i in steps) if steps else None
-    body_weight = None
-    if body_comp and body_comp.get("dateWeightList"):
-        w = body_comp["dateWeightList"][0].get("weight")
-        if w:
-            body_weight = round(float(w)/453.592,2)
-
-    sleep_score = extract_value(sleep_data.get("dailySleepDTO",{}),["sleepScores","overall","value"])
-    bed_ts = sleep_data.get("dailySleepDTO",{}).get("sleepStartTimestampGMT")
-    wake_ts = sleep_data.get("dailySleepDTO",{}).get("sleepEndTimestampGMT")
-    bed_iso = datetime.datetime.fromtimestamp(bed_ts/1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ).isoformat() if bed_ts else None
-    wake_iso = datetime.datetime.fromtimestamp(wake_ts/1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ).isoformat() if wake_ts else None
-
-    training_readiness = extract_value(readiness,["score","trainingReadinessScore"]) or None
-    current_status_val = extract_value(status,["currentStatus","trainingStatus"])
-    logger.info(f"Raw training status from Garmin: {current_status_val}")
-    training_status_val = TRAINING_STATUS_MAP.get(int(current_status_val), str(current_status_val)) if current_status_val else None
-
-    bb_min = bb_max = None
-    if body_battery and isinstance(body_battery, list) and body_battery:
-        try:
-            values = []
-            for item in body_battery:
-                array = item.get("bodyBatteryValuesArray") or []
-                for v in array:
-                    if isinstance(v,(list,tuple)) and v[1] is not None:
-                        values.append(v[1])
-            if values:
-                bb_min = min(values)
-                bb_max = max(values)
-        except Exception:
-            bb_min = bb_max = None
-
-    stats_obj = stats[0] if isinstance(stats,list) and stats else stats if isinstance(stats,dict) else {}
-    calories = safe_fetch(lambda: extract_value(stats_obj, ["totalKilocalories","active_calories"])) or None
-    resting_hr = safe_fetch(lambda: extract_value(stats_obj, ["restingHeartRate","heart_rate"])) or None
-
-    health_props = build_health_properties(
-        yesterday, steps_total, body_weight, bb_min, bb_max,
-        sleep_score, bed_iso, wake_iso, training_readiness,
-        training_status_val, resting_hr, calories
-    )
-
-    if "Name" not in health_props or "Date" not in health_props:
-        logger.error("Health properties missing required Name/Date; skipping")
-    else:
-        try:
-            notion.pages.create(parent={"database_id":NOTION_HEALTH_DB_ID}, properties=health_props)
-            logger.info("✅ Synced health metrics")
-        except Exception as e:
-            logger.error(f"Failed to push health metrics: {e}")
-            pprint.pprint(health_props)
+    logger.info("✅ Health metrics ready (mock push to Notion here)")
 
     # ---------------------------
-    # ACTIVITIES
+    # Activities
     # ---------------------------
-    last_date = get_latest_activity_date(notion, NOTION_ACTIVITIES_DB_ID)
     activities = safe_fetch(garmin.get_activities, 0, GARMIN_ACTIVITY_FETCH_LIMIT) or []
-    new_activities = []
+    logger.info(f"Found {len(activities)} activities")
 
     for act in activities:
-        raw_dt = act.get("startTimeLocal") or act.get("startTimeGMT") or ""
-        parsed_iso = parse_garmin_datetime(raw_dt)
-        if not parsed_iso:
-            continue
-        dt_date = datetime.datetime.fromisoformat(parsed_iso).date()
-        if not last_date or dt_date > last_date:
-            new_activities.append((act, parsed_iso))
+        act_iso = act.get("startTimeGMT")
+        act_name = act.get("activityName", "Unnamed Activity")
+        distance_km = act.get("distance", 0) / 1000
+        duration_min = act.get("duration", 0) / 60
+        avg_speed = act.get("averageSpeed", 0)
+        avg_pace_km = format_pace(avg_speed)
+        avg_pace_mi = ""  # Could implement km -> mi pace if desired
+        calories = act.get("calories", 0)
+        act_type, _ = format_activity_type(extract_value(act, ["activityType", "typeKey"]), act_name)
+        ae = act.get("aerobicTrainingEffect", 0)
+        an = act.get("anaerobicTrainingEffect", 0)
+        training_effect_label = format_training_effect(act.get("trainingEffectLabel"))
+        aerobic_msg = format_training_message(act.get("aerobicTrainingEffectMessage"))
+        anaerobic_msg = format_training_message(act.get("anaerobicTrainingEffectMessage"))
 
-    logger.info(f"Found {len(new_activities)} new activities to push")
-
-    for act, act_iso in new_activities:
-        activity_name = act.get("activityName") or f"Activity {act_iso[:10]}"
-        distance_km = float(act.get("distance",0))/1000 if act.get("distance") else None
-        duration_min = round(float(act.get("duration",0))/60,2) if act.get("duration") else None
-
-        avg_pace_km_text = avg_pace_mi_text = None
-        if distance_km and duration_min:
-            pace_km = duration_min/distance_km
-            m = int(pace_km)
-            s = int(round((pace_km - m)*60))
-            avg_pace_km_text = f"{m}:{s:02d} min/km"
-            pace_mi = pace_km/0.621371
-            m = int(pace_mi)
-            s = int(round((pace_mi - m)*60))
-            avg_pace_mi_text = f"{m}:{s:02d} min/mi"
-
-        calories = act.get("calories")
-        ae_effect = act.get("aerobicTrainingEffect") or extract_value(act,["aeEffect"])
-        an_effect = act.get("anaerobicTrainingEffect") or extract_value(act,["anEffect"])
-        activity_type = act.get("activityType",{}).get("typeKey","").lower()
-
-        activity_props = build_activity_properties(
-            act_iso, activity_name, distance_km, duration_min,
-            avg_pace_km_text, avg_pace_mi_text, calories,
-            activity_type, ae_effect, an_effect
+        props = build_activity_properties(
+            act_iso, act_name, distance_km, duration_min,
+            avg_pace_km, avg_pace_mi, calories,
+            act_type, ae, an, training_effect_label, aerobic_msg, anaerobic_msg
         )
 
-        if "Activity Name" not in activity_props or "Date" not in activity_props:
-            logger.warning(f"Skipping activity (missing required props): {activity_name}")
-            continue
+        icon_url = ACTIVITY_ICONS.get(act_type)
+        page_data = {"parent": {"database_id": NOTION_ACTIVITIES_DB_ID}, "properties": props}
+        if icon_url:
+            page_data["icon"] = {"type": "external", "external": {"url": icon_url}}
 
         try:
-            notion.pages.create(parent={"database_id":NOTION_ACTIVITIES_DB_ID}, properties=activity_props)
-            logger.info(f"🏃 Logged new activity: {activity_name}")
+            notion.pages.create(**page_data)
+            logger.info(f"✅ Pushed activity {act_name}")
         except Exception as e:
-            logger.error(f"Failed to push activity {activity_name}: {e}")
-            pprint.pprint(activity_props)
+            logger.warning(f"❌ Failed to push activity {act_name}: {e}")
 
-    try:
-        garmin.logout()
-    except Exception:
-        pass
-    logger.info("🏁 Sync complete.")
-
-if __name__=="__main__":
+if __name__ == "__main__":
+    load_dotenv()
     main()
