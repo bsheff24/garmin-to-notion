@@ -137,8 +137,13 @@ def clean_training_label(label):
 # ACTIVITY FORMAT HELPERS
 # ---------------------------
 def format_activity_type(activity_type, activity_name=""):
-    formatted_type = activity_type.replace("_", " ").title() if activity_type else "Unknown"
+    # Handle Garmin returning dicts like {"typeKey": "running"}
+    if isinstance(activity_type, dict):
+        activity_type = activity_type.get("typeKey", "Unknown")
+
+    formatted_type = activity_type.replace("_", " ").title() if isinstance(activity_type, str) else "Unknown"
     activity_subtype = formatted_type
+
     activity_mapping = {
         "Barre": "Strength",
         "Indoor Cardio": "Cardio",
@@ -148,15 +153,18 @@ def format_activity_type(activity_type, activity_name=""):
         "Strength Training": "Strength",
         "Treadmill Running": "Running"
     }
+
     if formatted_type in activity_mapping:
         activity_type = activity_mapping[formatted_type]
         activity_subtype = formatted_type
+
     if activity_name and "meditation" in activity_name.lower():
         return "Meditation", "Meditation"
     if activity_name and "barre" in activity_name.lower():
         return "Strength", "Barre"
     if activity_name and "stretch" in activity_name.lower():
         return "Stretching", "Stretching"
+
     return activity_type, activity_subtype
 
 
