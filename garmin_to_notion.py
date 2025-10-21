@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Unified Garmin -> Notion sync script
+Unified Garmin → Notion sync script
 - Health metrics: pushes yesterday's metrics to Health Metrics DB (title property "Name")
 - Activities: pushes new activities with full properties, rounded numerics, icons, and formatted strings
+- Adds duplicate prevention, consistent Avg Pace formatting, and icon handling
 """
 
 import os
 import datetime
 import logging
-import pprint
 from notion_client import Client
 from garminconnect import Garmin
 import pytz
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # CONFIG
 # ---------------------------
 DEBUG = True
-LOCAL_TZ = pytz.timezone("America/Chicago")  # Change if needed
+LOCAL_TZ = pytz.timezone("America/Chicago")
 GARMIN_ACTIVITY_FETCH_LIMIT = 200
 
 # ---------------------------
@@ -106,47 +106,8 @@ def notion_text(value):
         return None
     return {"rich_text": [{"text": {"content": str(value)}}]}
 
-def extract_value(data, keys):
-    if not data:
-        return None
-    if isinstance(data, dict):
-        for k in keys:
-            if k in data:
-                val = data[k]
-                if isinstance(val, (int, float, str)):
-                    return val
-                res = extract_value(val, keys)
-                if res is not None:
-                    return res
-        for v in data.values():
-            res = extract_value(v, keys)
-            if res is not None:
-                return res
-    elif isinstance(data, list):
-        for item in data:
-            res = extract_value(item, keys)
-            if res is not None:
-                return res
-    return None
-
 # ---------------------------
-# Training status mappings
-# ---------------------------
-TRAINING_STATUS_MAP = {
-    0: "No Status",
-    1: "Detraining",
-    2: "Maintaining",
-    3: "Recovery",
-    4: "Productive",
-    5: "Peaking",
-    6: "Strained",
-    7: "Unproductive",
-    8: "Overreaching",
-    9: "Paused"
-}
-
-# ---------------------------
-# ACTIVITY FORMAT HELPERS
+# ACTIVITY HELPERS
 # ---------------------------
 def format_activity_type(activity_type, activity_name=""):
     formatted_type = activity_type.replace('_', ' ').title() if activity_type else "Unknown"
@@ -177,8 +138,7 @@ def format_pace(average_speed):
         minutes = int(pace_min_km)
         seconds = int((pace_min_km - minutes) * 60)
         return f"{minutes}:{seconds:02d} min/km"
-    else:
-        return ""
+    return "Unknown"
 
 def format_training_effect(label):
     if not label:
@@ -212,7 +172,7 @@ def build_activity_properties(act_iso, activity_name, distance_km, duration_min,
                               aerobic_msg=None, anaerobic_msg=None):
     ae_val = round(float(ae_effect), 1) if ae_effect is not None else None
     an_val = round(float(an_effect), 1) if an_effect is not None else None
-    ratio = round(ae_val / an_val, 2) if (ae_val is not None and an_val not in (None, 0)) else None
+    ratio = round(ae_val / an_val, 2) if (ae_val and an_val and an_val != 0) else None
     distance_km_rounded = round(distance_km, 2) if distance_km is not None else None
     distance_mi_rounded = round(distance_km * 0.621371, 2) if distance_km is not None else None
     duration_rounded = round(duration_min, 2) if duration_min is not None else None
@@ -227,7 +187,7 @@ def build_activity_properties(act_iso, activity_name, distance_km, duration_min,
         "Avg Pace (min/mi)": notion_text(avg_pace_mi_text),
         "Calories": notion_number(calories),
         "Activity Type": notion_select(activity_type),
-        "Training Effect": notion_select(training_effect_label) if training_effect_label else None,
+        "Training Effect": notion_select(training_effect_label),
         "Aerobic": notion_number(ae_val),
         "Aerobic Effect": notion_select(aerobic_msg),
         "Anaerobic": notion_number(an_val),
@@ -237,11 +197,28 @@ def build_activity_properties(act_iso, activity_name, distance_km, duration_min,
     return {k: v for k, v in props.items() if v is not None}
 
 # ---------------------------
+# DUPLICATE CHECK
+# ---------------------------
+def activity_exists(client, database_id, act_date, act_name):
+    query = client.databases.query(
+        database_id=database_id,
+        filter={
+            "and": [
+                {"property": "Date", "date": {"equals": act_date.split("T")[0]}},
+                {"property": "Activity Name", "title": {"equals": act_name}}
+            ]
+        }
+    )
+    return len(query.get("results", [])) > 0
+
+# ---------------------------
 # MAIN
 # ---------------------------
 def main():
-    if not (GARMIN_USERNAME and GARMIN_PASSWORD and NOTION_TOKEN and NOTION_HEALTH_DB_ID and NOTION_ACTIVITIES_DB_ID):
-        logger.error("Missing required environment variables")
+    load_dotenv()
+
+    if not (GARMIN_USERNAME and GARMIN_PASSWORD and NOTION_TOKEN and NOTION_ACTIVITIES_DB_ID):
+        logger.error("❌ Missing required environment variables.")
         return
 
     notion = Client(auth=NOTION_TOKEN)
@@ -253,27 +230,8 @@ def main():
         logger.error(f"Failed to login to Garmin: {e}")
         return
 
-    today = datetime.date.today()
-    yesterday = today - datetime.timedelta(days=1)
-
-    # ---------------------------
-    # Health metrics
-    # ---------------------------
-    steps = safe_fetch(garmin.get_daily_steps, yesterday.isoformat(), yesterday.isoformat()) or []
-    sleep_data = safe_fetch(garmin.get_sleep_data, yesterday.isoformat()) or {}
-    body_battery = safe_fetch(garmin.get_body_battery, yesterday.isoformat(), yesterday.isoformat()) or []
-    body_comp = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
-    readiness = safe_fetch(garmin.get_training_readiness, yesterday.isoformat()) or []
-    status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or []
-    stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or {}
-
-    logger.info("✅ Health metrics ready (mock push to Notion here)")
-
-    # ---------------------------
-    # Activities
-    # ---------------------------
     activities = safe_fetch(garmin.get_activities, 0, GARMIN_ACTIVITY_FETCH_LIMIT) or []
-    logger.info(f"Found {len(activities)} activities")
+    logger.info(f"Found {len(activities)} Garmin activities.")
 
     for act in activities:
         act_iso = act.get("startTimeGMT")
@@ -282,14 +240,19 @@ def main():
         duration_min = act.get("duration", 0) / 60
         avg_speed = act.get("averageSpeed", 0)
         avg_pace_km = format_pace(avg_speed)
-        avg_pace_mi = ""  # Could implement km -> mi pace if desired
+        avg_pace_mi = ""  # optional
         calories = act.get("calories", 0)
-        act_type, _ = format_activity_type(extract_value(act, ["activityType", "typeKey"]), act_name)
+        act_type, _ = format_activity_type(act.get("activityType", {}).get("typeKey", ""), act_name)
         ae = act.get("aerobicTrainingEffect", 0)
         an = act.get("anaerobicTrainingEffect", 0)
         training_effect_label = format_training_effect(act.get("trainingEffectLabel"))
         aerobic_msg = format_training_message(act.get("aerobicTrainingEffectMessage"))
         anaerobic_msg = format_training_message(act.get("anaerobicTrainingEffectMessage"))
+
+        # Skip if activity already exists
+        if activity_exists(notion, NOTION_ACTIVITIES_DB_ID, act_iso, act_name):
+            logger.debug(f"⏭ Skipping existing activity: {act_name}")
+            continue
 
         props = build_activity_properties(
             act_iso, act_name, distance_km, duration_min,
@@ -304,10 +267,9 @@ def main():
 
         try:
             notion.pages.create(**page_data)
-            logger.info(f"✅ Pushed activity {act_name}")
+            logger.info(f"✅ Created: {act_name}")
         except Exception as e:
-            logger.warning(f"❌ Failed to push activity {act_name}: {e}")
+            logger.warning(f"❌ Failed to create {act_name}: {e}")
 
 if __name__ == "__main__":
-    load_dotenv()
     main()
