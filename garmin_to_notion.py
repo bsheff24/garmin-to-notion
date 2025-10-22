@@ -476,63 +476,62 @@ def main():
             logger.error(f"⚠️ Failed to push health metrics: {e}")
             pprint.pprint(health_props)
 
-    # ---------------------------
+ # ---------------------------
     # ACTIVITIES
     # ---------------------------
     logger.info("Syncing activities...")
-    last_notions_date = get_latest_activity_date(notion, NOTION_ACTIVITIES_DB_ID)
-    logger.info(f"Latest activity date in Notion: {last_notions_date}")
+
+    # Fetch all existing Notion activity identifiers to prevent duplicates
+    logger.info("Fetching existing activity records from Notion for duplicate check...")
+    existing_records = {}
+    try:
+        has_more = True
+        start_cursor = None
+        while has_more:
+            query = notion.databases.query(
+                database_id=NOTION_ACTIVITIES_DB_ID,
+                start_cursor=start_cursor,
+                page_size=100
+            )
+            for r in query.get("results", []):
+                props = r.get("properties", {})
+                name = props.get("Activity Name", {}).get("title", [{}])[0].get("plain_text", "")
+                date = props.get("Date", {}).get("date", {}).get("start", "")
+                act_type = props.get("Activity Type", {}).get("select", {}).get("name", "")
+                key = f"{name}|{date.split('T')[0]}|{act_type}"
+                existing_records[key] = r["id"]
+            has_more = query.get("has_more", False)
+            start_cursor = query.get("next_cursor")
+        logger.info(f"Loaded {len(existing_records)} existing activities from Notion.")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not preload existing activities: {e}")
+        existing_records = {}
 
     activities = safe_fetch(garmin.get_activities, 0, GARMIN_ACTIVITY_FETCH_LIMIT) or []
     logger.info(f"Fetched {len(activities)} activities from Garmin")
 
-    # process activities (only those newer than last_notions_date)
     for act in activities:
-        # prefer GMT (UTC) timestamp, fallback to local strings
         raw_ts = act.get("startTimeGMT") or act.get("startTimeLocal") or act.get("startTime")
         parsed_iso = parse_garmin_datetime(raw_ts)
         if not parsed_iso:
-            logger.debug(f"Skipping activity with unparsable time: {act.get('activityName')}")
             continue
+
         try:
             dt_obj = datetime.datetime.fromisoformat(parsed_iso)
         except Exception:
             continue
-        dt_date = dt_obj.date()
-        if last_notions_date and dt_date <= last_notions_date:
-            # older or equal; skip
-            continue
+        date_only = dt_obj.date().isoformat()
 
-        # basic fields
-        activity_name = act.get("activityName") or f"Activity {parsed_iso[:10]}"
-        # distance meters -> km
-        distance_km = None
-        try:
-            distance_m = act.get("distance")
-            if distance_m is not None:
-                distance_km = float(distance_m) / 1000.0
-        except Exception:
-            distance_km = None
-        # duration seconds -> minutes
-        duration_min = None
-        try:
-            raw_dur = act.get("duration")
-            if raw_dur is not None:
-                duration_min = round(float(raw_dur) / 60.0, 2)
-        except Exception:
-            duration_min = None
-
-        # pace: try averageSpeed (m/s) else duration/distance
+        activity_name = act.get("activityName") or f"Activity {date_only}"
+        distance_m = act.get("distance")
+        distance_km = float(distance_m) / 1000.0 if distance_m else None
+        raw_dur = act.get("duration")
+        duration_min = round(float(raw_dur) / 60.0, 2) if raw_dur else None
         avg_speed = act.get("averageSpeed")
         avg_pace_km_text, avg_pace_mi_text = compute_paces(avg_speed, duration_min, distance_km)
-
-        # calories
         calories = act.get("calories")
-
-        # activity type (handle dict or string)
         raw_activity_type = act.get("activityType", {}) or ""
         act_type, subactivity = format_activity_type(raw_activity_type, activity_name)
-
         ae_effect = act.get("aerobicTrainingEffect") or extract_value(act, ["aeEffect"]) or None
         an_effect = act.get("anaerobicTrainingEffect") or extract_value(act, ["anEffect"]) or None
         training_effect_label = act.get("trainingEffectLabel")
@@ -540,44 +539,26 @@ def main():
         anaerobic_msg = act.get("anaerobicTrainingEffectMessage")
 
         props = build_activity_properties(
-            parsed_iso,
-            activity_name,
-            distance_km,
-            duration_min,
-            avg_pace_km_text,
-            avg_pace_mi_text,
-            calories,
-            act_type,
-            subactivity,
-            ae_effect,
-            an_effect,
-            training_effect_label,
-            aerobic_msg,
-            anaerobic_msg
+            parsed_iso, activity_name, distance_km, duration_min,
+            avg_pace_km_text, avg_pace_mi_text, calories, act_type,
+            subactivity, ae_effect, an_effect, training_effect_label,
+            aerobic_msg, anaerobic_msg
         )
 
-        if "Activity Name" not in props or "Date" not in props:
-            logger.warning(f"Skipping activity (missing required props): {activity_name}")
-            logger.debug("Raw activity payload:")
-            logger.debug(pprint.pformat(act))
-            continue
-
-        # find existing page id (update instead of duplicate)
-        page_id = find_existing_activity_page(notion, NOTION_ACTIVITIES_DB_ID, activity_name, parsed_iso, act_type)
+        key = f"{activity_name}|{date_only}|{act_type}"
+        page_id = existing_records.get(key)
 
         try:
             if page_id:
                 notion.pages.update(page_id=page_id, properties=props)
-                logger.info(f"🔁 Updated activity: {activity_name} ({parsed_iso})")
+                logger.info(f"🔁 Updated existing activity: {activity_name} ({date_only})")
             else:
                 notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=props)
-                logger.info(f"✅ Created activity: {activity_name} ({parsed_iso})")
+                logger.info(f"✅ Created new activity: {activity_name} ({date_only})")
         except Exception as e:
             logger.error(f"⚠️ Failed to push activity {activity_name}: {e}")
-            logger.debug("Attempted props:")
             logger.debug(pprint.pformat(props))
 
-    # logout
     try:
         garmin.logout()
     except Exception:
