@@ -62,6 +62,7 @@ TRAINING_STATUS_MAP = {
     8: "Strained",
     9: "Paused"
 }
+
 def clean_training_label(label):
     if not label:
         return None
