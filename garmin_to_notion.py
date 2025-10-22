@@ -57,12 +57,11 @@ TRAINING_STATUS_MAP = {
     3: "Recovery",
     4: "Productive",
     5: "Peaking",
-    6: "Strained",
-    7: "Unproductive",
-    8: "Overreaching",
+    6: "Unproductive",
+    7: "Overreaching",
+    8: "Strained",
     9: "Paused"
 }
-
 def clean_training_label(label):
     if not label:
         return None
