@@ -63,7 +63,6 @@ TRAINING_STATUS_MAP = {
     9: "Paused"
 }
 
-# Helper to clean Garmin labels like IMPACTING_TEMPO_22 -> "Impacting"
 def clean_training_label(label):
     if not label:
         return None
@@ -175,12 +174,15 @@ def extract_value(data, keys):
     return None
 
 # ---------------------------
-# Activity formatting
+# ACTIVITY HELPERS
 # ---------------------------
 def format_activity_type(activity_type, activity_name=""):
     if isinstance(activity_type, dict):
         activity_type = activity_type.get("typeKey") or activity_type.get("type") or ""
-    formatted = str(activity_type).replace("_", " ").title() if activity_type else "Unknown"
+    if not activity_type:
+        formatted = "Unknown"
+    else:
+        formatted = str(activity_type).replace("_", " ").title()
     subtype = formatted
     mapping = {
         "Barre": "Strength",
@@ -203,28 +205,35 @@ def format_activity_type(activity_type, activity_name=""):
 def compute_paces(average_speed_mps, duration_min, distance_km):
     if average_speed_mps and average_speed_mps > 0:
         pace_km = 1000 / (average_speed_mps * 60)
-        m, s = int(pace_km), int(round((pace_km - int(pace_km)) * 60))
+        m = int(pace_km)
+        s = int(round((pace_km - m) * 60))
         pace_km_str = f"{m}:{s:02d} min/km"
         pace_mi = 1609.34 / (average_speed_mps * 60)
-        m2, s2 = int(pace_mi), int(round((pace_mi - int(pace_mi)) * 60))
+        m2 = int(pace_mi)
+        s2 = int(round((pace_mi - m2) * 60))
         pace_mi_str = f"{m2}:{s2:02d} min/mi"
         return pace_km_str, pace_mi_str
-    if distance_km and duration_min:
-        pace_min_per_km = duration_min / distance_km
-        m, s = int(pace_min_per_km), int(round((pace_min_per_km - int(pace_min_per_km)) * 60))
-        pace_km_str = f"{m}:{s:02d} min/km"
-        pace_min_per_mi = pace_min_per_km / 0.621371
-        m2, s2 = int(pace_min_per_mi), int(round((pace_min_per_mi - int(pace_min_per_mi)) * 60))
-        pace_mi_str = f"{m2}:{s2:02d} min/mi"
-        return pace_km_str, pace_mi_str
+    try:
+        if distance_km and distance_km > 0 and duration_min and duration_min > 0:
+            pace_min_per_km = duration_min / distance_km
+            m = int(pace_min_per_km)
+            s = int(round((pace_min_per_km - m) * 60))
+            pace_km_str = f"{m}:{s:02d} min/km"
+            pace_min_per_mi = pace_min_per_km / 0.621371
+            m2 = int(pace_min_per_mi)
+            s2 = int(round((pace_min_per_mi - m2) * 60))
+            pace_mi_str = f"{m2}:{s2:02d} min/mi"
+            return pace_km_str, pace_mi_str
+    except Exception:
+        pass
     return "Unknown", "Unknown"
 
 # ---------------------------
-# Build props
+# HEALTH + ACTIVITY BUILDERS
 # ---------------------------
-def build_health_properties(yesterday_iso, steps_total, body_weight, bb_min, bb_max,
-                            sleep_score, bed_time_iso, wake_time_iso,
-                            training_readiness, training_status_val, resting_hr, calories):
+def build_health_properties(yesterday_iso, steps_total, body_weight, bb_min, bb_max, sleep_score,
+                            bed_time_iso, wake_time_iso, training_readiness, training_status_val,
+                            resting_hr, calories):
     props = {
         "Name": notion_title(yesterday_iso.strftime("%m/%d/%Y")),
         "Date": notion_date_obj_from_iso(yesterday_iso.isoformat()),
@@ -241,6 +250,10 @@ def build_health_properties(yesterday_iso, steps_total, body_weight, bb_min, bb_
         "Calories Burned": notion_number(calories)
     }
     return {k: v for k, v in props.items() if v is not None}
+
+# (activity build + Notion helpers remain unchanged)
+# ...
+
 
 # ---------------------------
 # Notion update helpers
