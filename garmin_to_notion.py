@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-Garmin -> Notion unified sync
-- Health metrics (yesterday) -> NOTION_HEALTH_DB_ID
-- Activities -> NOTION_ACTIVITIES_DB_ID (create or update)
-Features:
-- Correct timezone handling (Garmin UTC -> America/Chicago)
-- Subactivity populated
-- Rounded numeric fields (km/mi, duration, AE/AN)
-- Avg pace always populated (tries averageSpeed then duration/distance)
-- Cleaned training-effect labels
-- Duplicate-safe: update if Activity Name + Date + Activity Type match
-- Keeps Notion templates/icons intact (no icon overwrites)
+Garmin → Notion Sync
+- Health metrics (yesterday)
+- Activities (new or same-day entries)
 """
 
 import os
@@ -19,69 +11,6 @@ import logging
 import pprint
 from notion_client import Client
 from garminconnect import Garmin
-import pytz
-from dotenv import load_dotenv
-
-# ---------------------------
-# CONFIG
-# ---------------------------
-load_dotenv()
-DEBUG = True
-LOCAL_TZ = pytz.timezone("America/Chicago")
-GARMIN_ACTIVITY_FETCH_LIMIT = 200
-
-# ---------------------------
-# ENV
-# ---------------------------
-GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
-GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
-NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
-
-# ---------------------------
-# LOGGING
-# ---------------------------
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("garmin_to_notion")
-if DEBUG:
-    logger.setLevel(logging.DEBUG)
-
-# ---------------------------
-# TRAINING / EFFECT MAPS
-# ---------------------------
-TRAINING_STATUS_MAP = {
-    0: "No Status",
-    1: "Detraining",
-    2: "Maintaining",
-    3: "Recovery",
-    4: "Productive",
-    5: "Peaking",
-    6: "Unproductive",
-    7: "Overreaching",
-    8: "Strained",
-    9: "Paused"
-}
-
-def clean_training_label(label):
-    if not label:
-        return None
-    s = str(label).upper()
-    known = {
-        "IMPROVING": "Improving",
-        "IMPACTING": "Impacting",
-        "HIGHLY_IMPACTING": "Highly Impacting",
-        "MAINTAINING": "Maintaining",
-        "RECOVERY": "Recovery",
-        "NO_BENEFIT": "No Benefit",
-        "NO_AEROBIC_BENEFIT": "No Benefit",
-        "MINOR": "Some Benefit",
-        "OVERREACHING": "Overreaching"
-    }
-    for k, v in known.items():
-        if k in s:
-            return v
-    return s.replace("_", " ").title()
 
 # ---------------------------
 # HELPERS
@@ -90,55 +19,55 @@ def safe_fetch(func, *args, **kwargs):
     try:
         return func(*args, **kwargs)
     except Exception as e:
-        logger.warning(f"⚠️ Garmin API error ({getattr(func,'__name__', func)}): {e}")
+        print(f"⚠️ Error fetching from Garmin API ({func.__name__}): {e}")
         return None
 
 def parse_garmin_datetime(dt_str):
     if not dt_str:
         return None
-    s = str(dt_str).strip()
     try:
-        if s.endswith("Z"):
-            s = s.replace("Z", "+00:00")
-        if "T" in s and ("+" in s[19:] or "-" in s[19:]):
-            dt = datetime.datetime.fromisoformat(s)
-            return dt.astimezone(LOCAL_TZ).isoformat()
+        return datetime.datetime.fromisoformat(dt_str).isoformat()
+    except Exception:
+        pass
+    fmts = [
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"
+    ]
+    for f in fmts:
         try:
-            dt = datetime.datetime.fromisoformat(s)
-            if dt.tzinfo:
-                return dt.astimezone(LOCAL_TZ).isoformat()
-        except Exception:
-            pass
-        fmts = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"]
-        for f in fmts:
-            try:
-                dt = datetime.datetime.strptime(s, f)
+            dt = datetime.datetime.strptime(dt_str, f)
+            if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=datetime.timezone.utc).astimezone(LOCAL_TZ)
-                return dt.isoformat()
-            except Exception:
-                continue
-    except Exception as e:
-        logger.debug(f"parse_garmin_datetime error for '{dt_str}': {e}")
-    return None
+            return dt.isoformat()
+        except Exception:
+            continue
+    try:
+        dt = datetime.datetime.strptime(dt_str[:10], "%Y-%m-%d")
+        dt = dt.replace(tzinfo=datetime.timezone.utc).astimezone(LOCAL_TZ)
+        return dt.isoformat()
+    except Exception:
+        return None
 
 def notion_date_obj_from_iso(iso_str):
     if not iso_str:
         return None
-    return {"date": {"start": iso_str}}
+    try:
+        dt = datetime.datetime.fromisoformat(iso_str).astimezone(LOCAL_TZ)
+        return {"date": {"start": dt.isoformat()}}
+    except Exception:
+        return None
 
 def notion_number(value):
     if value is None:
         return None
     try:
-        v = float(value)
-        if v == 0:
-            return None
-        return {"number": round(v, 2)}
+        v = round(float(value), 2)
+        return None if v == 0 else {"number": v}
     except Exception:
         return None
 
 def notion_select(name):
-    if name is None:
+    if not name:
         return None
     return {"select": {"name": str(name)}}
 
@@ -173,111 +102,8 @@ def extract_value(data, keys):
                 return res
     return None
 
-# ---------------------------
-# ACTIVITY HELPERS
-# ---------------------------
-def format_activity_type(activity_type, activity_name=""):
-    if isinstance(activity_type, dict):
-        activity_type = activity_type.get("typeKey") or activity_type.get("type") or ""
-    if not activity_type:
-        formatted = "Unknown"
-    else:
-        formatted = str(activity_type).replace("_", " ").title()
-    subtype = formatted
-    mapping = {
-        "Barre": "Strength",
-        "Indoor Cardio": "Cardio",
-        "Indoor Cycling": "Cycling",
-        "Indoor Rowing": "Rowing",
-        "Speed Walking": "Walking",
-        "Strength Training": "Strength",
-        "Treadmill Running": "Running"
-    }
-    main = mapping.get(formatted, formatted)
-    if activity_name and "meditation" in activity_name.lower():
-        return "Meditation", "Meditation"
-    if activity_name and "barre" in activity_name.lower():
-        return "Strength", "Barre"
-    if activity_name and "stretch" in activity_name.lower():
-        return "Stretching", "Stretching"
-    return main, subtype
-
-def compute_paces(average_speed_mps, duration_min, distance_km):
-    if average_speed_mps and average_speed_mps > 0:
-        pace_km = 1000 / (average_speed_mps * 60)
-        m = int(pace_km)
-        s = int(round((pace_km - m) * 60))
-        pace_km_str = f"{m}:{s:02d} min/km"
-        pace_mi = 1609.34 / (average_speed_mps * 60)
-        m2 = int(pace_mi)
-        s2 = int(round((pace_mi - m2) * 60))
-        pace_mi_str = f"{m2}:{s2:02d} min/mi"
-        return pace_km_str, pace_mi_str
-    try:
-        if distance_km and distance_km > 0 and duration_min and duration_min > 0:
-            pace_min_per_km = duration_min / distance_km
-            m = int(pace_min_per_km)
-            s = int(round((pace_min_per_km - m) * 60))
-            pace_km_str = f"{m}:{s:02d} min/km"
-            pace_min_per_mi = pace_min_per_km / 0.621371
-            m2 = int(pace_min_per_mi)
-            s2 = int(round((pace_min_per_mi - m2) * 60))
-            pace_mi_str = f"{m2}:{s2:02d} min/mi"
-            return pace_km_str, pace_mi_str
-    except Exception:
-        pass
-    return "Unknown", "Unknown"
-
-# ---------------------------
-# HEALTH + ACTIVITY BUILDERS
-# ---------------------------
-def build_health_properties(yesterday_iso, steps_total, body_weight, bb_min, bb_max, sleep_score,
-                            bed_time_iso, wake_time_iso, training_readiness, training_status_val,
-                            resting_hr, calories):
-    props = {
-        "Name": notion_title(yesterday_iso.strftime("%m/%d/%Y")),
-        "Date": notion_date_obj_from_iso(yesterday_iso.isoformat()),
-        "Steps": notion_number(steps_total),
-        "Body Weight": notion_number(body_weight),
-        "Body Battery (Min)": notion_number(bb_min),
-        "Body Battery (Max)": notion_number(bb_max),
-        "Sleep Score": notion_number(sleep_score),
-        "Bedtime": notion_date_obj_from_iso(bed_time_iso) if bed_time_iso else None,
-        "Wake Time": notion_date_obj_from_iso(wake_time_iso) if wake_time_iso else None,
-        "Training Readiness": notion_number(training_readiness),
-        "Training Status": notion_select(training_status_val),
-        "Resting HR": notion_number(resting_hr),
-        "Calories Burned": notion_number(calories)
-    }
-    return {k: v for k, v in props.items() if v is not None}
-
-# (activity build + Notion helpers remain unchanged)
-# ...
-
-
-# ---------------------------
-# Notion update helpers
-# ---------------------------
-def find_existing_activity_page(notion_client, db_id, act_name, act_date_iso, act_type):
-    try:
-        date_only = act_date_iso.split("T")[0]
-        query = notion_client.databases.query(
-            database_id=db_id,
-            filter={
-                "and": [
-                    {"property": "Activity Name", "title": {"equals": act_name}},
-                    {"property": "Date", "date": {"equals": date_only}},
-                    {"property": "Activity Type", "select": {"equals": act_type}},
-                ]
-            },
-            page_size=1
-        )
-        results = query.get("results", [])
-        if results:
-            return results[0]["id"]
-    except Exception as e:
-        logger.warning(f"⚠️ Notion query error: {e}")
-    return None
+def filter_props(props):
+    return {k: v for k, v in props.items() if v}
 
 def get_latest_activity_date(notion_client, db_id):
     try:
@@ -289,105 +115,221 @@ def get_latest_activity_date(notion_client, db_id):
         results = res.get("results", [])
         if not results:
             return None
-        start = results[0]["properties"].get("Date", {}).get("date", {}).get("start")
-        if start:
-            return datetime.datetime.fromisoformat(start).date()
+        props = results[0].get("properties", {})
+        start = props.get("Date", {}).get("date", {}).get("start")
+        if not start:
+            return None
+        return datetime.datetime.fromisoformat(start).date()
     except Exception as e:
-        logger.warning(f"Could not query latest date: {e}")
-    return None
+        logger.warning(f"Could not query Notion for latest activity date: {e}")
+        return None
+
+# ---------------------------
+# CONFIG
+# ---------------------------
+DEBUG = True
+LOCAL_TZ = datetime.datetime.now().astimezone().tzinfo
+GARMIN_ACTIVITY_FETCH_LIMIT = 200
+
+GARMIN_USERNAME = os.getenv("GARMIN_USERNAME")
+GARMIN_PASSWORD = os.getenv("GARMIN_PASSWORD")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_HEALTH_DB_ID = os.getenv("NOTION_HEALTH_DB_ID")
+NOTION_ACTIVITIES_DB_ID = os.getenv("NOTION_ACTIVITIES_DB_ID")
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("garmin_to_notion")
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
+
+# ---------------------------
+# TRAINING STATUS MAP
+# ---------------------------
+TRAINING_STATUS_MAP = {
+    0: "No Status",
+    1: "Detraining",
+    2: "Maintaining",
+    3: "Recovery",
+    4: "Productive",
+    5: "Peaking",
+    6: "Unproductive",
+    7: "Productive",  # remapped per latest status
+    8: "Strained",
+    9: "Overreaching",
+    10: "Paused"
+}
+
+# ---------------------------
+# BUILDERS
+# ---------------------------
+def build_health_properties(yesterday_iso, steps, weight, bb_min, bb_max, sleep_score,
+                            bed_time_iso, wake_time_iso, readiness, status_val, hr, calories):
+    props = {
+        "Name": notion_title(yesterday_iso.strftime("%m/%d/%Y")),
+        "Date": notion_date_obj_from_iso(yesterday_iso.isoformat()),
+        "Steps": notion_number(steps),
+        "Body Weight": notion_number(weight),
+        "Body Battery (Min)": notion_number(bb_min),
+        "Body Battery (Max)": notion_number(bb_max),
+        "Sleep Score": notion_number(sleep_score),
+        "Bedtime": notion_date_obj_from_iso(bed_time_iso) if bed_time_iso else None,
+        "Wake Time": notion_date_obj_from_iso(wake_time_iso) if wake_time_iso else None,
+        "Training Readiness": notion_number(readiness),
+        "Training Status": notion_select(status_val),
+        "Resting HR": notion_number(hr),
+        "Calories Burned": notion_number(calories)
+    }
+    return filter_props(props)
+
+def build_activity_properties(act_iso, name, km, mins, pace_km, pace_mi, cal, act_type, ae, an):
+    ratio = (ae / an) if (ae and an and an != 0) else None
+    props = {
+        "Activity Name": notion_title(name),
+        "Date": notion_date_obj_from_iso(act_iso),
+        "Distance (km)": notion_number(km),
+        "Distance (mi)": notion_number(km * 0.621371) if km else None,
+        "Duration (mins)": notion_number(mins),
+        "Avg Pace (min/km)": notion_text(pace_km),
+        "Avg Pace (min/mi)": notion_text(pace_mi),
+        "Calories": notion_number(cal),
+        "Activity Type": notion_select(act_type),
+        "Aerobic": notion_number(ae),
+        "Anaerobic": notion_number(an),
+        "AE:AN": notion_number(ratio)
+    }
+    return filter_props(props)
 
 # ---------------------------
 # MAIN
 # ---------------------------
 def main():
+    if not (GARMIN_USERNAME and GARMIN_PASSWORD and NOTION_TOKEN and NOTION_HEALTH_DB_ID and NOTION_ACTIVITIES_DB_ID):
+        logger.error("Missing required environment variables")
+        return
+
     notion = Client(auth=NOTION_TOKEN)
     garmin = Garmin(GARMIN_USERNAME, GARMIN_PASSWORD)
-    garmin.login()
+    logger.info("🔐 Logging into Garmin...")
+    try:
+        garmin.login()
+    except Exception as e:
+        logger.error(f"Login failed: {e}")
+        return
 
     today = datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
-    logger.info(f"📅 Collecting Garmin health data for {yesterday.isoformat()}")
 
+    # ---------------------------
+    # HEALTH METRICS
+    # ---------------------------
+    logger.info(f"📅 Collecting Garmin health data for {yesterday}")
     steps = safe_fetch(garmin.get_daily_steps, yesterday.isoformat(), yesterday.isoformat()) or []
     sleep = safe_fetch(garmin.get_sleep_data, yesterday.isoformat()) or {}
     bb = safe_fetch(garmin.get_body_battery, yesterday.isoformat(), yesterday.isoformat()) or []
-    body = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
+    body_comp = safe_fetch(garmin.get_body_composition, yesterday.isoformat()) or {}
     readiness = safe_fetch(garmin.get_training_readiness, yesterday.isoformat()) or []
     status = safe_fetch(garmin.get_training_status, yesterday.isoformat()) or []
     stats = safe_fetch(garmin.get_stats_and_body, yesterday.isoformat()) or []
 
-    steps_total = sum(i.get("totalSteps", 0) for i in steps) if steps else None
+    steps_total = sum(i.get("totalSteps", 0) for i in steps)
+    weight = None
+    if body_comp.get("dateWeightList"):
+        w = body_comp["dateWeightList"][0].get("weight")
+        if w:
+            weight = round(float(w) / 453.592, 2)
 
-    body_weight = None
-    if isinstance(body, dict) and body.get("dateWeightList"):
-        try:
-            w = body["dateWeightList"][0].get("weight")
-            if w:
-                body_weight = round(float(w) / 453.592, 2)
-        except Exception:
-            pass
-
-    sleep_daily = sleep.get("dailySleepDTO", {})
-    sleep_score = extract_value(sleep_daily, ["sleepScores", "overall", "value"])
-    bed_ts = sleep_daily.get("sleepStartTimestampGMT")
-    wake_ts = sleep_daily.get("sleepEndTimestampGMT")
-
+    sleep_score = extract_value(sleep.get("dailySleepDTO", {}), ["sleepScores", "overall", "value"])
+    bed_ts = sleep.get("dailySleepDTO", {}).get("sleepStartTimestampGMT")
+    wake_ts = sleep.get("dailySleepDTO", {}).get("sleepEndTimestampGMT")
     bed_iso = datetime.datetime.fromtimestamp(bed_ts / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ).isoformat() if bed_ts else None
     wake_iso = datetime.datetime.fromtimestamp(wake_ts / 1000, tz=datetime.timezone.utc).astimezone(LOCAL_TZ).isoformat() if wake_ts else None
 
-    training_readiness = extract_value(readiness, ["score", "trainingReadinessScore"])
-
-    # 🧠 Updated Training Status logic
-    logger.debug(f"Raw training status response: {status}")
-    possible_keys = [
-        "currentStatus", "trainingStatus", "status",
-        "currentTrainingStatus", "userTrainingStatus",
-        "trainingStatusValue", "primaryTrainingStatus"
-    ]
-    current_status_val = extract_value(status, possible_keys)
-    logger.info(f"Raw training status from Garmin (parsed): {current_status_val}")
-
-    training_status_val = None
-    if current_status_val is not None:
-        try:
-            if isinstance(current_status_val, (int, float)) or str(current_status_val).isdigit():
-                training_status_val = TRAINING_STATUS_MAP.get(int(current_status_val), f"Code {current_status_val}")
-            else:
-                training_status_val = str(current_status_val).replace("_", " ").title()
-        except Exception:
-            training_status_val = str(current_status_val)
+    readiness_score = extract_value(readiness, ["score", "trainingReadinessScore"])
+    raw_status_val = extract_value(status, ["currentStatus", "trainingStatus"])
+    logger.info(f"Raw training status from Garmin (parsed): {raw_status_val}")
+    training_status_val = TRAINING_STATUS_MAP.get(int(raw_status_val), str(raw_status_val)) if raw_status_val else None
 
     bb_min = bb_max = None
     if isinstance(bb, list) and bb:
-        try:
-            vals = []
-            for item in bb:
-                arr = item.get("bodyBatteryValuesArray") or []
-                for v in arr:
-                    if isinstance(v, (list, tuple)) and len(v) > 1:
-                        vals.append(v[1])
-            if vals:
-                bb_min, bb_max = min(vals), max(vals)
-        except Exception:
-            pass
+        vals = []
+        for item in bb:
+            for v in item.get("bodyBatteryValuesArray", []):
+                if isinstance(v, (list, tuple)) and v[1] is not None:
+                    vals.append(v[1])
+        if vals:
+            bb_min = min(vals)
+            bb_max = max(vals)
 
     stats_obj = stats[0] if isinstance(stats, list) and stats else stats
     calories = extract_value(stats_obj, ["totalKilocalories", "active_calories"])
-    resting_hr = extract_value(stats_obj, ["restingHeartRate", "heart_rate"])
+    hr = extract_value(stats_obj, ["restingHeartRate", "heart_rate"])
 
-    health_props = build_health_properties(
-        yesterday, steps_total, body_weight, bb_min, bb_max,
-        sleep_score, bed_iso, wake_iso,
-        training_readiness, training_status_val,
-        resting_hr, calories
-    )
+    health_props = build_health_properties(yesterday, steps_total, weight, bb_min, bb_max,
+                                           sleep_score, bed_iso, wake_iso, readiness_score,
+                                           training_status_val, hr, calories)
+    try:
+        notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
+        logger.info("✅ Synced health metrics (yesterday)")
+    except Exception as e:
+        logger.error(f"Failed to push health metrics: {e}")
+        pprint.pprint(health_props)
 
-    notion.pages.create(parent={"database_id": NOTION_HEALTH_DB_ID}, properties=health_props)
-    logger.info("✅ Synced health metrics (yesterday)")
+    # ---------------------------
+    # ACTIVITIES
+    # ---------------------------
+    last_date = get_latest_activity_date(notion, NOTION_ACTIVITIES_DB_ID)
+    activities = safe_fetch(garmin.get_activities, 0, GARMIN_ACTIVITY_FETCH_LIMIT) or []
+    new_activities = []
 
-    # Activities sync stays the same
+    for act in activities:
+        raw_dt = act.get("startTimeLocal") or act.get("startTimeGMT")
+        parsed_iso = parse_garmin_datetime(raw_dt)
+        if not parsed_iso:
+            continue
+        dt_date = datetime.datetime.fromisoformat(parsed_iso).date()
+
+        if not last_date or dt_date >= last_date:
+            existing = notion.databases.query(
+                database_id=NOTION_ACTIVITIES_DB_ID,
+                filter={"property": "Activity Name", "title": {"equals": act.get("activityName")}}
+            )
+            if not existing.get("results"):
+                new_activities.append((act, parsed_iso))
+
+    logger.info(f"📊 Found {len(new_activities)} new activities to push")
+
+    for act, act_iso in new_activities:
+        name = act.get("activityName") or f"Activity {act_iso[:10]}"
+        km = float(act.get("distance", 0)) / 1000 if act.get("distance") else None
+        mins = round(float(act.get("duration", 0)) / 60, 2) if act.get("duration") else None
+
+        pace_km = pace_mi = None
+        if km and mins:
+            pk = mins / km
+            m, s = int(pk), int(round((pk - int(pk)) * 60))
+            pace_km = f"{m}:{s:02d} min/km"
+            pm = pk / 0.621371
+            m, s = int(pm), int(round((pm - int(pm)) * 60))
+            pace_mi = f"{m}:{s:02d} min/mi"
+
+        ae = act.get("aerobicTrainingEffect")
+        an = act.get("anaerobicTrainingEffect")
+        act_type = act.get("activityType", {}).get("typeKey", "").lower()
+        cal = act.get("calories")
+
+        props = build_activity_properties(act_iso, name, km, mins, pace_km, pace_mi, cal, act_type, ae, an)
+        try:
+            notion.pages.create(parent={"database_id": NOTION_ACTIVITIES_DB_ID}, properties=props)
+            logger.info(f"🏃 Logged activity: {name}")
+        except Exception as e:
+            logger.error(f"Failed to push {name}: {e}")
+            pprint.pprint(props)
+
+    try:
+        garmin.logout()
+    except Exception:
+        pass
     logger.info("🏁 Sync complete.")
-    garmin.logout()
 
 if __name__ == "__main__":
     main()
