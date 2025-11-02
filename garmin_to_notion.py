@@ -54,11 +54,11 @@ TRAINING_STATUS_MAP = {
     1: "Detraining",
     2: "Maintaining",
     3: "Recovery",
-    4: "Productive",
+    4: "Strained",
     5: "Peaking",
     6: "Unproductive",
-    7: "Productive",   # remapped per your device observations
-    8: "Strained",
+    7: "Maintaining",   
+    8: "Productive",
     9: "Overreaching",
     10: "Paused"
 }
