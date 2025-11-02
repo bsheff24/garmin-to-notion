@@ -52,13 +52,13 @@ if DEBUG:
 TRAINING_STATUS_MAP = {
     0: "No Status",
     1: "Detraining",
-    2: "Maintaining",
+    2: "?",
     3: "Recovery",
-    4: "Strained",
+    4: "Maintaining",
     5: "Peaking",
     6: "Unproductive",
-    7: "Maintaining",   
-    8: "Productive",
+    7: "Productive",   
+    8: "Strained",
     9: "Overreaching",
     10: "Paused"
 }
